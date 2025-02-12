@@ -6,8 +6,8 @@ We actively support the latest major release of **Cops and Robbers**. Please ens
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 2.1.0     | :white_check_mark: |
-| < 2.0.0   | :x:                |
+| 0.0.0     | :white_check_mark: |
+| < 0.0.0   | :x:                |
 
 ---
 
