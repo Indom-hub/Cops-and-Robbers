@@ -184,15 +184,15 @@ AddEventHandler('cnr:updatePlayerData', function(newPlayerData)
     end
 end)
 
-RegisterNetEvent('cnr:setNuiFocus')
-AddEventHandler('cnr:setNuiFocus', function(data)
-    if type(data) == "table" and data.hasFocus ~= nil and data.hasCursor ~= nil then
-        print(string.format("[CNR_CLIENT] Setting NUI focus via event: hasFocus=%s, hasCursor=%s", tostring(data.hasFocus), tostring(data.hasCursor)))
-        SetNuiFocus(data.hasFocus, data.hasCursor)
-    else
-        print(string.format("[CNR_CLIENT_WARN] cnr:setNuiFocus received invalid data: %s", json.encode and json.encode(data) or tostring(data)))
-    end
-end)
+-- RegisterNetEvent('cnr:setNuiFocus')
+-- AddEventHandler('cnr:setNuiFocus', function(data)
+--     if type(data) == "table" and data.hasFocus ~= nil and data.hasCursor ~= nil then
+--         print(string.format("[CNR_CLIENT] Setting NUI focus via event: hasFocus=%s, hasCursor=%s", tostring(data.hasFocus), tostring(data.hasCursor)))
+--         SetNuiFocus(data.hasFocus, data.hasCursor)
+--     else
+--         print(string.format("[CNR_CLIENT_WARN] cnr:setNuiFocus received invalid data: %s", json.encode and json.encode(data) or tostring(data)))
+--     end
+-- end)
 
 function CalculateXpForNextLevelClient(currentLevel, playerRole)
     if not Config.LevelingSystemEnabled then return 999999 end
@@ -630,6 +630,17 @@ end)
 RegisterNUICallback('getPlayerInventory', function(data, cb)
     if RequestInventoryForNUI then RequestInventoryForNUI(cb)
     else print("Error: RequestInventoryForNUI function not found.", "error"); cb({ error = "Internal error: Inventory system not available." }) end
+end)
+
+RegisterNUICallback('setNuiFocus', function(data, cb)
+    if type(data) == "table" and data.hasFocus ~= nil and data.hasCursor ~= nil then
+        print(string.format("[CNR_CLIENT] Setting NUI focus via NUI callback: hasFocus=%s, hasCursor=%s", tostring(data.hasFocus), tostring(data.hasCursor)))
+        SetNuiFocus(data.hasFocus, data.hasCursor)
+        cb('ok')
+    else
+        print(string.format("[CNR_CLIENT_WARN] NUI callback 'setNuiFocus' received invalid data: %s", json.encode and json.encode(data) or tostring(data)))
+        cb('error') -- Or cb({status='error', message='Invalid data'})
+    end
 end)
 
 Citizen.CreateThread(function()

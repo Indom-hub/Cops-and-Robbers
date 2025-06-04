@@ -145,15 +145,21 @@ window.addEventListener('message', function(event) {
 // =================================================================---
 async function fetchSetNuiFocus(hasFocus, hasCursor) {
     try {
-        const resName = window.cnrResourceName || 'cops-and-robbers';
-        console.log('[CNR_NUI] Attempting to fetchSetNuiFocus. URL:', `https://\${resName}/cnr:setNuiFocus`);
-        await fetch(`https://\${resName}/cnr:setNuiFocus`, {
+        console.log('[CNR_NUI] Inside fetchSetNuiFocus. window.cnrResourceName:', window.cnrResourceName);
+        const resName = window.cnrResourceName || 'cops-and-robbers'; // Ensure resName is correctly defined based on window.cnrResourceName
+
+        // Ensure this log uses backticks and resName is defined in this scope
+        console.log(`[CNR_NUI] Attempting to fetchSetNuiFocus. Resource: ${resName}, URL: https://${resName}/setNuiFocus`);
+
+        await fetch(`https://${resName}/setNuiFocus`, { // Ensure this is a template literal with backticks
             method: 'POST',
             headers: { 'Content-Type': 'application/json; charset=UTF-8' },
             body: JSON.stringify({ hasFocus: hasFocus, hasCursor: hasCursor })
         });
     } catch (error) {
-        console.error('Error calling cnr:setNuiFocus:', error);
+        // Update the error log for clarity and ensure it also uses resName if needed for context
+        const resNameForError = window.cnrResourceName || 'cops-and-robbers'; // Recapture for error message just in case
+        console.error(`Error calling setNuiFocus NUI callback (URL attempted: https://${resNameForError}/setNuiFocus):`, error);
     }
 }
 
