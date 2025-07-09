@@ -14,32 +14,29 @@ shared_scripts {
 
 -- Define server-side scripts in dependency order.
 server_scripts {
+<<<<<<< Updated upstream
     -- Core utilities and constants (loaded first)
     'safe_utils.lua',    -- Safe utility functions.
+=======
+    -- Core server logic with consolidated systems
+    'server.lua',       -- Core server logic with validation, data management, transactions, player management, performance optimization, and integration management
+>>>>>>> Stashed changes
     
-    -- New refactored systems (loaded in dependency order)
-    'validation.lua',    -- Server-side validation system.
-    'data_manager.lua',  -- Improved data persistence system.
-    'secure_inventory.lua', -- Secure inventory system with anti-duplication.
-    'secure_transactions.lua', -- Secure transaction system for purchases/sales.
-    'player_manager.lua', -- Refactored player data management system.
-    'performance_optimizer.lua', -- Performance optimization and monitoring.
-    'integration_manager.lua', -- Integration and compatibility manager.
+    -- Consolidated systems
+    'inventory.lua',    -- Consolidated inventory system (server-side)
+    'character_editor.lua', -- Consolidated character editor (server-side)
+    'progression.lua',  -- Consolidated progression system (server-side)
     
-    -- Original systems (maintained for compatibility)
-    'server.lua',       -- Core server logic (refactored to use new systems).
-    'admin.lua',         -- Admin commands and server-side admin functionalities.
-    'inventory_server.lua', -- Legacy inventory system (will be phased out).
-    'character_editor_server.lua', -- Character editor server logic.
-    'progression_server.lua' -- Enhanced progression system server logic.
+    -- Remaining specialized systems
+    'admin.lua',        -- Admin commands and server-side admin functionalities
 }
 
 -- Define client-side scripts.
 client_scripts {
-    'client.lua',        -- Core client logic and event handling.
-    'inventory_client.lua',
-    'character_editor_client.lua', -- Character editor client logic
-    'progression_client.lua' -- Enhanced progression system client logic
+    'client.lua',        -- Core client logic and event handling
+    'inventory.lua',     -- Consolidated inventory system (client-side)
+    'character_editor.lua', -- Consolidated character editor (client-side)
+    'progression.lua'    -- Consolidated progression system (client-side)
 }
 
 -- Define the NUI page.
