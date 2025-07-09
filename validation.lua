@@ -439,7 +439,7 @@ function Validation.ValidateAdminPermission(playerId, requiredLevel)
     -- For now, just check if player is admin
     
     return true, nil
-}
+end
 
 -- ====================================================================
 -- EVENT VALIDATION
@@ -513,5 +513,4 @@ Citizen.CreateThread(function()
     end
 end)
 
--- Export the validation module
-return Validation
+-- Validation module is now available globally

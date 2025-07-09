@@ -1,16 +1,9 @@
 # Ignore development and documentation folders
 .github/
 .vscode/
-docs/*
 .zencoder/*
 # Exception: track docs folder
-!docs/README.md
-!docs/SECURITY.md
-!docs/LICENSE
-!docs/WANTED_SYSTEM_IMPROVEMENTS.md
-!docs/CONTRIBUTING.md
-!docs/CODE_OF_CONDUCT.md
-!docs/WANTED_SYSTEM_IMPROVEMENTS.md
+
 # Common files to ignore
 *.log
 *.tmp

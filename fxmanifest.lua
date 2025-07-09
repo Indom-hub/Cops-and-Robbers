@@ -9,29 +9,37 @@ version '1.2.0'
 -- Define shared scripts, loaded first on both server and client.
 shared_scripts {
     'config.lua',       -- Game mode configuration.
-    'constants.lua'     -- Centralized constants and configuration values.
+    'constants.lua',    -- Centralized constants and configuration values.
+    'safe_utils.lua'    -- Safe utility functions (shared between client and server).
 }
 
 -- Define server-side scripts in dependency order.
 server_scripts {
-    -- Core server logic with consolidated systems
-    'server.lua',       -- Core server logic with validation, data management, transactions, player management, performance optimization, and integration management
+    -- Core utilities and constants (loaded first)
     
-    -- Consolidated systems
-    'inventory.lua',    -- Consolidated inventory system (server-side)
-    'character_editor.lua', -- Consolidated character editor (server-side)
-    'progression.lua',  -- Consolidated progression system (server-side)
+    -- New refactored systems (loaded in dependency order)
+    'validation.lua',    -- Server-side validation system.
+    'data_manager.lua',  -- Improved data persistence system.
+    'secure_inventory.lua', -- Secure inventory system with anti-duplication.
+    'secure_transactions.lua', -- Secure transaction system for purchases/sales.
+    'player_manager.lua', -- Refactored player data management system.
+    'performance_optimizer.lua', -- Performance optimization and monitoring.
+    'integration_manager.lua', -- Integration and compatibility manager.
     
-    -- Remaining specialized systems
-    'admin.lua',        -- Admin commands and server-side admin functionalities
+    -- Original systems (maintained for compatibility)
+    'server.lua',       -- Core server logic (refactored to use new systems).
+    'admin.lua',         -- Admin commands and server-side admin functionalities.
+    'inventory_server.lua', -- Legacy inventory system (will be phased out).
+    'character_editor_server.lua', -- Character editor server logic.
+    'progression_server.lua' -- Enhanced progression system server logic.
 }
 
 -- Define client-side scripts.
 client_scripts {
-    'client.lua',        -- Core client logic and event handling
-    'inventory.lua',     -- Consolidated inventory system (client-side)
-    'character_editor.lua', -- Consolidated character editor (client-side)
-    'progression.lua'    -- Consolidated progression system (client-side)
+    'client.lua',        -- Core client logic and event handling.
+    'inventory_client.lua',
+    'character_editor_client.lua', -- Character editor client logic
+    'progression_client.lua' -- Enhanced progression system client logic
 }
 
 -- Define the NUI page.

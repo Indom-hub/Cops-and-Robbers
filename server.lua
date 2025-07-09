@@ -1,5854 +1,12 @@
 -- server.lua
 -- Version: 1.2.0
--- Consolidated server-side functionality
 
 -- Configuration shortcuts (Config must be loaded before Log if Log uses it)
 -- However, config.lua is a shared_script, so Config global should be available.
 -- For safety, ensure Log definition handles potential nil Config if script order changes.
 local Config = Config -- Keep this near the top as Log depends on it.
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-local function Log(message, level)
-    level = level or "info"
-    -- Only show critical errors and warnings to reduce spam
-    if level == "error" or level == "warn" then
-        print("[CNR_CRITICAL_LOG] [" .. string.upper(level) .. "] " .. message)
-    end
-end
-=======
--- ====================================================================
--- VALIDATION SYSTEM (from validation.lua)
--- ====================================================================
-=======
--- ====================================================================
--- VALIDATION SYSTEM (from validation.lua)
--- ====================================================================
 
--- Ensure Constants are loaded
-if not Constants then
-    error("Constants must be loaded before validation.lua")
-end
-
--- Initialize Validation module
-Validation = Validation or {}
-
--- Rate limiting storage
-local rateLimits = {}
-local playerEventCounts = {}
-
--- ====================================================================
--- VALIDATION UTILITY FUNCTIONS
--- ====================================================================
-
---- Safely convert value to number with bounds checking
---- @param value any The value to convert
---- @param min number Minimum allowed value
---- @param max number Maximum allowed value
---- @param default number Default value if conversion fails
---- @return number The validated number
-local function SafeToNumber(value, min, max, default)
-    local num = tonumber(value)
-    if not num then return default end
-    if min and num < min then return min end
-    if max and num > max then return max end
-    return num
-end
-
---- Check if a string is valid and within length limits
---- @param str string The string to validate
---- @param maxLength number Maximum allowed length
---- @param allowEmpty boolean Whether empty strings are allowed
---- @return boolean, string Success status and error message
-local function ValidateString(str, maxLength, allowEmpty)
-    if not str then
-        return false, "String is nil"
-    end
-    
-    if type(str) ~= "string" then
-        return false, "Value is not a string"
-    end
-    
-    if not allowEmpty and #str == 0 then
-        return false, "String cannot be empty"
-    end
-    
-    if maxLength and #str > maxLength then
-        return false, string.format("String too long (max: %d, got: %d)", maxLength, #str)
-    end
-    
-    return true, nil
-end
-
---- Log validation errors with context
---- @param playerId number Player ID for context
---- @param operation string The operation being validated
---- @param error string The validation error
-local function LogValidationError(playerId, operation, error)
-    local playerName = GetPlayerName(playerId) or "Unknown"
-    print(string.format("[CNR_VALIDATION_ERROR] Player %s (%d) - %s: %s", 
-        playerName, playerId, operation, error))
-end
-
--- ====================================================================
--- RATE LIMITING SYSTEM
--- ====================================================================
-
---- Initialize rate limiting for a player
---- @param playerId number Player ID
-local function InitializeRateLimit(playerId)
-    if not rateLimits[playerId] then
-        rateLimits[playerId] = {
-            events = {},
-            purchases = {},
-            inventoryOps = {}
-        }
-    end
-end
-
---- Check if player is rate limited for a specific action
---- @param playerId number Player ID
---- @param actionType string Type of action (events, purchases, inventoryOps)
---- @param maxCount number Maximum allowed actions
---- @param timeWindow number Time window in milliseconds
---- @return boolean Whether the action is allowed
-function Validation.CheckRateLimit(playerId, actionType, maxCount, timeWindow)
-    InitializeRateLimit(playerId)
-    
-    local currentTime = GetGameTimer()
-    local playerLimits = rateLimits[playerId][actionType]
-    
-    -- Clean old entries
-    for i = #playerLimits, 1, -1 do
-        if currentTime - playerLimits[i] > timeWindow then
-            table.remove(playerLimits, i)
-        end
-    end
-    
-    -- Check if limit exceeded
-    if #playerLimits >= maxCount then
-        LogValidationError(playerId, "RateLimit", 
-            string.format("Exceeded %s limit: %d/%d in %dms", actionType, #playerLimits, maxCount, timeWindow))
-        return false
-    end
-    
-    -- Add current action
-    table.insert(playerLimits, currentTime)
-    return true
-end
-
---- Clean up rate limiting data for disconnected player
---- @param playerId number Player ID
-function Validation.CleanupRateLimit(playerId)
-    rateLimits[playerId] = nil
-    playerEventCounts[playerId] = nil
-end
-
--- ====================================================================
--- PLAYER VALIDATION
--- ====================================================================
-
---- Validate player exists and is connected
---- @param playerId number Player ID to validate
---- @return boolean, string Success status and error message
-function Validation.ValidatePlayer(playerId)
-    if not playerId or type(playerId) ~= "number" then
-        return false, "Invalid player ID type"
-    end
-    
-    if playerId <= 0 then
-        return false, "Invalid player ID value"
-    end
-    
-    local playerName = GetPlayerName(playerId)
-    if not playerName then
-        return false, "Player not found or disconnected"
-    end
-    
-    return true, nil
-end
-
---- Validate player has required role
---- @param playerId number Player ID
---- @param requiredRole string Required role
---- @param playerData table Player data (optional, will fetch if not provided)
---- @return boolean, string Success status and error message
-function Validation.ValidatePlayerRole(playerId, requiredRole, playerData)
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then return false, error end
-    
-    if not playerData then
-        playerData = GetCnrPlayerData(playerId)
-    end
-    
-    if not playerData then
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    if playerData.role ~= requiredRole then
-        return false, string.format("Role '%s' required, player has '%s'", requiredRole, playerData.role or "none")
-    end
-    
-    return true, nil
-end
-
---- Validate player has required level
---- @param playerId number Player ID
---- @param requiredLevel number Required level
---- @param playerData table Player data (optional)
---- @return boolean, string Success status and error message
-function Validation.ValidatePlayerLevel(playerId, requiredLevel, playerData)
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then return false, error end
-    
-    if not playerData then
-        playerData = GetCnrPlayerData(playerId)
-    end
-    
-    if not playerData then
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    local playerLevel = playerData.level or 1
-    if playerLevel < requiredLevel then
-        return false, string.format("Level %d required, player is level %d", requiredLevel, playerLevel)
-    end
-    
-    return true, nil
-end
-
--- ====================================================================
--- ITEM VALIDATION
--- ====================================================================
-
---- Validate item exists in configuration
---- @param itemId string Item ID to validate
---- @return boolean, table, string Success status, item config, and error message
-function Validation.ValidateItem(itemId)
-    local valid, error = ValidateString(itemId, Constants.VALIDATION.MAX_STRING_LENGTH, false)
-    if not valid then
-        return false, nil, "Invalid item ID: " .. error
-    end
-    
-    if not Config or not Config.Items then
-        return false, nil, "Item configuration not loaded"
-    end
-    
-    local itemConfig = nil
-    for _, item in ipairs(Config.Items) do
-        if item.itemId == itemId then
-            itemConfig = item
-            break
-        end
-    end
-    
-    if not itemConfig then
-        return false, nil, Constants.ERROR_MESSAGES.ITEM_NOT_FOUND
-    end
-    
-    return true, itemConfig, nil
-end
-
---- Validate item quantity
---- @param quantity any Quantity to validate
---- @return boolean, number, string Success status, validated quantity, and error message
-function Validation.ValidateQuantity(quantity)
-    local num = SafeToNumber(quantity, 
-        Constants.VALIDATION.MIN_ITEM_QUANTITY, 
-        Constants.VALIDATION.MAX_ITEM_QUANTITY, 
-        nil)
-    
-    if not num then
-        return false, 0, Constants.ERROR_MESSAGES.INVALID_QUANTITY
-    end
-    
-    return true, num, nil
-end
-
---- Validate player can afford item purchase
---- @param playerId number Player ID
---- @param itemConfig table Item configuration
---- @param quantity number Quantity to purchase
---- @param playerData table Player data (optional)
---- @return boolean, number, string Success status, total cost, and error message
-function Validation.ValidateItemPurchase(playerId, itemConfig, quantity, playerData)
-    if not playerData then
-        playerData = GetCnrPlayerData(playerId)
-    end
-    
-    if not playerData then
-        return false, 0, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    local totalCost = (itemConfig.basePrice or 0) * quantity
-    
-    -- Validate cost is reasonable
-    if totalCost > Constants.VALIDATION.MAX_MONEY_TRANSACTION then
-        return false, totalCost, "Transaction amount too large"
-    end
-    
-    -- Check player funds
-    local playerMoney = playerData.money or 0
-    if playerMoney < totalCost then
-        return false, totalCost, Constants.ERROR_MESSAGES.INSUFFICIENT_FUNDS
-    end
-    
-    -- Check role restrictions
-    if itemConfig.forCop and playerData.role ~= Constants.ROLES.COP then
-        return false, totalCost, "Item restricted to police officers"
-    end
-    
-    -- Check level requirements
-    local requiredLevel = nil
-    if playerData.role == Constants.ROLES.COP and itemConfig.minLevelCop then
-        requiredLevel = itemConfig.minLevelCop
-    elseif playerData.role == Constants.ROLES.ROBBER and itemConfig.minLevelRobber then
-        requiredLevel = itemConfig.minLevelRobber
-    end
-    
-    if requiredLevel then
-        local playerLevel = playerData.level or 1
-        if playerLevel < requiredLevel then
-            return false, totalCost, string.format("Level %d required for this item", requiredLevel)
-        end
-    end
-    
-    return true, totalCost, nil
-end
-
---- Validate player has item for sale
---- @param playerId number Player ID
---- @param itemId string Item ID
---- @param quantity number Quantity to sell
---- @param playerData table Player data (optional)
---- @return boolean, string Success status and error message
-function Validation.ValidateItemSale(playerId, itemId, quantity, playerData)
-    if not playerData then
-        playerData = GetCnrPlayerData(playerId)
-    end
-    
-    if not playerData or not playerData.inventory then
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    local playerItem = playerData.inventory[itemId]
-    if not playerItem or not playerItem.count then
-        return false, Constants.ERROR_MESSAGES.INSUFFICIENT_ITEMS
-    end
-    
-    if playerItem.count < quantity then
-        return false, string.format("Insufficient items: have %d, need %d", playerItem.count, quantity)
-    end
-    
-    return true, nil
-end
-
--- ====================================================================
--- MONEY VALIDATION
--- ====================================================================
-
---- Validate money transaction
---- @param amount any Amount to validate
---- @param allowNegative boolean Whether negative amounts are allowed
---- @return boolean, number, string Success status, validated amount, and error message
-function Validation.ValidateMoney(amount, allowNegative)
-    local minAmount = allowNegative and -Constants.VALIDATION.MAX_MONEY_TRANSACTION or Constants.VALIDATION.MIN_MONEY_TRANSACTION
-    local num = SafeToNumber(amount, minAmount, Constants.VALIDATION.MAX_MONEY_TRANSACTION, nil)
-    
-    if not num then
-        return false, 0, "Invalid money amount"
-    end
-    
-    return true, num, nil
-end
-
---- Validate player has sufficient funds
---- @param playerId number Player ID
---- @param amount number Amount needed
---- @param playerData table Player data (optional)
---- @return boolean, string Success status and error message
-function Validation.ValidatePlayerFunds(playerId, amount, playerData)
-    if not playerData then
-        playerData = GetCnrPlayerData(playerId)
-    end
-    
-    if not playerData then
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    local playerMoney = playerData.money or 0
-    if playerMoney < amount then
-        return false, string.format("Insufficient funds: have $%d, need $%d", playerMoney, amount)
-    end
-    
-    return true, nil
-end
-
--- ====================================================================
--- INVENTORY VALIDATION
--- ====================================================================
-
---- Validate inventory operation
---- @param playerId number Player ID
---- @param operation string Operation type
---- @return boolean, string Success status and error message
-function Validation.ValidateInventoryOperation(playerId, operation)
-    -- Rate limit inventory operations
-    if not Validation.CheckRateLimit(playerId, "inventoryOps", 
-        Constants.VALIDATION.MAX_INVENTORY_OPERATIONS_PER_SECOND, 
-        Constants.TIME_MS.SECOND) then
-        return false, Constants.ERROR_MESSAGES.RATE_LIMITED
-    end
-    
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then return false, error end
-    
-    local validOperations = {"equip", "unequip", "use", "drop", "add", "remove"}
-    local isValidOperation = false
-    for _, validOp in ipairs(validOperations) do
-        if operation == validOp then
-            isValidOperation = true
-            break
-        end
-    end
-    
-    if not isValidOperation then
-        return false, "Invalid inventory operation: " .. tostring(operation)
-    end
-    
-    return true, nil
-end
-
---- Validate inventory has space for items
---- @param playerData table Player data
---- @param quantity number Quantity to add
---- @return boolean, string Success status and error message
-function Validation.ValidateInventorySpace(playerData, quantity)
-    if not playerData or not playerData.inventory then
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    -- Calculate current inventory count
-    local currentCount = 0
-    for _, item in pairs(playerData.inventory) do
-        currentCount = currentCount + (item.count or 0)
-    end
-    
-    if (currentCount + quantity) > Constants.PLAYER_LIMITS.MAX_INVENTORY_SLOTS then
-        return false, Constants.ERROR_MESSAGES.INVENTORY_FULL
-    end
-    
-    return true, nil
-end
-
--- ====================================================================
--- ADMIN VALIDATION
--- ====================================================================
-
---- Validate player has admin permissions
---- @param playerId number Player ID
---- @param requiredLevel number Required admin level (optional)
---- @return boolean, string Success status and error message
-function Validation.ValidateAdminPermission(playerId, requiredLevel)
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then return false, error end
-    
-    -- Use existing IsPlayerAdmin function
-    if not IsPlayerAdmin(playerId) then
-        return false, Constants.ERROR_MESSAGES.PERMISSION_DENIED
-    end
-    
-    -- TODO: Implement admin levels if needed
-    -- For now, just check if player is admin
-    
-    return true, nil
-end
-
--- ====================================================================
--- EVENT VALIDATION
--- ====================================================================
-
---- Validate network event parameters
---- @param playerId number Player ID
---- @param eventName string Event name
---- @param params table Event parameters
---- @return boolean, string Success status and error message
-function Validation.ValidateNetworkEvent(playerId, eventName, params)
-    -- Rate limit general events
-    if not Validation.CheckRateLimit(playerId, "events", 
-        Constants.VALIDATION.MAX_EVENTS_PER_SECOND, 
-        Constants.TIME_MS.SECOND) then
-        return false, Constants.ERROR_MESSAGES.RATE_LIMITED
-    end
-    
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then return false, error end
-    
-    local validError = ValidateString(eventName, Constants.VALIDATION.MAX_STRING_LENGTH, false)
-    if not validError then
-        return false, "Invalid event name"
-    end
-    
-    if params and type(params) ~= "table" then
-        return false, "Event parameters must be a table"
-    end
-    
-    return true, nil
-end
-
--- ====================================================================
--- VALIDATION CLEANUP FUNCTIONS
--- ====================================================================
-
---- Clean up validation data for disconnected player
---- @param playerId number Player ID
-function Validation.CleanupPlayer(playerId)
-    Validation.CleanupRateLimit(playerId)
-end
-
---- Periodic cleanup of old rate limiting data
-function Validation.PeriodicCleanup()
-    local currentTime = GetGameTimer()
-    local cleanupThreshold = 5 * Constants.TIME_MS.MINUTE -- 5 minutes
-    
-    for playerId, limits in pairs(rateLimits) do
-        -- Check if player is still connected
-        if not GetPlayerName(playerId) then
-            rateLimits[playerId] = nil
-        else
-            -- Clean old entries for connected players
-            for actionType, actions in pairs(limits) do
-                for i = #actions, 1, -1 do
-                    if currentTime - actions[i] > cleanupThreshold then
-                        table.remove(actions, i)
-                    end
-                end
-            end
-        end
-    end
-end
-
--- Start periodic cleanup thread
-Citizen.CreateThread(function()
-    while true do
-        Citizen.Wait(Constants.TIME_MS.MINUTE) -- Run every minute
-        Validation.PeriodicCleanup()
-    end
-end)
-
--- ====================================================================
--- DATA MANAGER SYSTEM (from data_manager.lua)
--- ====================================================================
-
--- Initialize DataManager module
-DataManager = DataManager or {}
-
--- Internal state
-local pendingSaves = {}
-local saveQueue = {}
-local isProcessingSaves = false
-local lastSaveTime = 0
-local backupSchedule = {}
-
--- Performance monitoring
-local saveStats = {
-    totalSaves = 0,
-    failedSaves = 0,
-    averageSaveTime = 0,
-    lastSaveTime = 0
-}
-
--- ====================================================================
--- DATA MANAGER UTILITY FUNCTIONS
--- ====================================================================
-
---- Generate a unique filename for player data
---- @param playerId number Player ID
---- @return string Filename
-local function GetPlayerDataFilename(playerId)
-    return string.format("%s/player_%d%s", Constants.FILES.PLAYER_DATA_DIR, playerId, Constants.FILES.JSON_EXT)
-end
-
---- Generate backup filename with timestamp
---- @param originalFilename string Original filename
---- @return string Backup filename
-local function GetBackupFilename(originalFilename)
-    local timestamp = os.date("%Y%m%d_%H%M%S")
-    local baseName = originalFilename:gsub(Constants.FILES.JSON_EXT .. "$", "")
-    return string.format("%s/%s_%s%s", Constants.FILES.BACKUP_DIR, baseName, timestamp, Constants.FILES.BACKUP_EXT)
-end
-
---- Log data manager operations
---- @param message string Log message
---- @param level string Log level
-local function LogDataManager(message, level)
-    level = level or Constants.LOG_LEVELS.INFO
-    if level == Constants.LOG_LEVELS.ERROR or level == Constants.LOG_LEVELS.WARN then
-        print(string.format("[CNR_DATA_MANAGER] [%s] %s", string.upper(level), message))
-    end
-end
-
---- Validate JSON data before saving
---- @param data table Data to validate
---- @return boolean, string Success status and error message
-local function ValidateJsonData(data)
-    if not data or type(data) ~= "table" then
-        return false, "Data must be a table"
-    end
-    
-    -- Check for circular references (basic check)
-    local function checkCircular(tbl, seen)
-        seen = seen or {}
-        if seen[tbl] then
-            return false
-        end
-        seen[tbl] = true
-        
-        for k, v in pairs(tbl) do
-            if type(v) == "table" then
-                if not checkCircular(v, seen) then
-                    return false
-                end
-            end
-        end
-        
-        seen[tbl] = nil
-        return true
-    end
-    
-    if not checkCircular(data) then
-        return false, "Circular reference detected in data"
-    end
-    
-    return true, nil
-end
-
---- Safely encode JSON with error handling
---- @param data table Data to encode
---- @return boolean, string Success status and JSON string or error message
-local function SafeJsonEncode(data)
-    local valid, error = ValidateJsonData(data)
-    if not valid then
-        return false, error
-    end
-    
-    local success, result = pcall(json.encode, data)
-    if not success then
-        return false, "JSON encoding failed: " .. tostring(result)
-    end
-    
-    return true, result
-end
-
---- Safely decode JSON with error handling
---- @param jsonString string JSON string to decode
---- @return boolean, table Success status and decoded data or error message
-local function SafeJsonDecode(jsonString)
-    if not jsonString or type(jsonString) ~= "string" or #jsonString == 0 then
-        return false, "Invalid JSON string"
-    end
-    
-    local success, result = pcall(json.decode, jsonString)
-    if not success then
-        return false, "JSON decoding failed: " .. tostring(result)
-    end
-    
-    if type(result) ~= "table" then
-        return false, "Decoded JSON is not a table"
-    end
-    
-    return true, result
-end
-
--- ====================================================================
--- BACKUP SYSTEM
--- ====================================================================
-
---- Create backup of a file
---- @param filename string Original filename
---- @return boolean Success status
-local function CreateBackup(filename)
-    local fileData = LoadResourceFile(GetCurrentResourceName(), filename)
-    if not fileData then
-        return false -- File doesn't exist, no backup needed
-    end
-    
-    local backupFilename = GetBackupFilename(filename)
-    local success = SaveResourceFile(GetCurrentResourceName(), backupFilename, fileData, -1)
-    
-    if success then
-        LogDataManager(string.format("Created backup: %s -> %s", filename, backupFilename))
-        
-        -- Clean old backups
-        CleanOldBackups(filename)
-    else
-        LogDataManager(string.format("Failed to create backup for %s", filename), Constants.LOG_LEVELS.ERROR)
-    end
-    
-    return success
-end
-
---- Clean old backup files to prevent disk space issues
---- @param originalFilename string Original filename
-function CleanOldBackups(originalFilename)
-    -- This is a simplified version - in a real implementation,
-    -- you would scan the backup directory and remove old files
-    -- For now, we'll just log the intent
-    LogDataManager(string.format("Cleaning old backups for %s", originalFilename))
-end
-
---- Schedule automatic backups
---- @param filename string Filename to backup
---- @param intervalHours number Backup interval in hours
-function DataManager.ScheduleBackup(filename, intervalHours)
-    intervalHours = intervalHours or Constants.FILES.BACKUP_INTERVAL_HOURS
-    
-    backupSchedule[filename] = {
-        interval = intervalHours * Constants.TIME_MS.HOUR,
-        lastBackup = 0
-    }
-end
-
---- Process scheduled backups
-local function ProcessScheduledBackups()
-    local currentTime = GetGameTimer()
-    
-    for filename, schedule in pairs(backupSchedule) do
-        if currentTime - schedule.lastBackup >= schedule.interval then
-            if CreateBackup(filename) then
-                schedule.lastBackup = currentTime
-            end
-        end
-    end
-end
-
--- ====================================================================
--- CORE SAVE/LOAD FUNCTIONS
--- ====================================================================
-
---- Save data to file with error handling and backup
---- @param filename string Filename to save to
---- @param data table Data to save
---- @param createBackup boolean Whether to create backup before saving
---- @return boolean, string Success status and error message
-function DataManager.SaveToFile(filename, data, createBackup)
-    local startTime = GetGameTimer()
-    
-    -- Validate input
-    if not filename or type(filename) ~= "string" then
-        return false, "Invalid filename"
-    end
-    
-    local valid, jsonData = SafeJsonEncode(data)
-    if not valid then
-        LogDataManager(string.format("Failed to encode data for %s: %s", filename, jsonData), Constants.LOG_LEVELS.ERROR)
-        return false, jsonData
-    end
-    
-    -- Create backup if requested
-    if createBackup then
-        CreateBackup(filename)
-    end
-    
-    -- Save the file
-    local success = SaveResourceFile(GetCurrentResourceName(), filename, jsonData, -1)
-    
-    -- Update statistics
-    local saveTime = GetGameTimer() - startTime
-    saveStats.totalSaves = saveStats.totalSaves + 1
-    saveStats.lastSaveTime = saveTime
-    saveStats.averageSaveTime = (saveStats.averageSaveTime + saveTime) / 2
-    
-    if success then
-        LogDataManager(string.format("Saved %s (took %dms)", filename, saveTime))
-        return true, nil
-    else
-        saveStats.failedSaves = saveStats.failedSaves + 1
-        LogDataManager(string.format("Failed to save %s", filename), Constants.LOG_LEVELS.ERROR)
-        return false, "File save operation failed"
-    end
-end
-
---- Load data from file with error handling
---- @param filename string Filename to load from
---- @return boolean, table Success status and loaded data or error message
-function DataManager.LoadFromFile(filename)
-    if not filename or type(filename) ~= "string" then
-        return false, "Invalid filename"
-    end
-    
-    local fileData = LoadResourceFile(GetCurrentResourceName(), filename)
-    if not fileData then
-        return false, "File not found or empty"
-    end
-    
-    local valid, data = SafeJsonDecode(fileData)
-    if not valid then
-        LogDataManager(string.format("Failed to decode %s: %s", filename, data), Constants.LOG_LEVELS.ERROR)
-        return false, data
-    end
-    
-    LogDataManager(string.format("Loaded %s", filename))
-    return true, data
-end
-
--- ====================================================================
--- BATCHED SAVE SYSTEM
--- ====================================================================
-
---- Add data to save queue for batched processing
---- @param filename string Filename to save to
---- @param data table Data to save
---- @param priority number Priority (higher = processed first)
-function DataManager.QueueSave(filename, data, priority)
-    priority = priority or 1
-    
-    -- Remove existing entry for same file to prevent duplicates
-    for i = #saveQueue, 1, -1 do
-        if saveQueue[i].filename == filename then
-            table.remove(saveQueue, i)
-        end
-    end
-    
-    -- Add to queue
-    table.insert(saveQueue, {
-        filename = filename,
-        data = data,
-        priority = priority,
-        timestamp = GetGameTimer()
-    })
-    
-    -- Sort by priority (higher first)
-    table.sort(saveQueue, function(a, b) return a.priority > b.priority end)
-    
-    LogDataManager(string.format("Queued save for %s (priority: %d, queue size: %d)", filename, priority, #saveQueue))
-end
-
---- Process the save queue
-local function ProcessSaveQueue()
-    if isProcessingSaves or #saveQueue == 0 then
-        return
-    end
-    
-    isProcessingSaves = true
-    local processed = 0
-    local maxProcessPerCycle = Constants.DATABASE.BATCH_SIZE
-    
-    while #saveQueue > 0 and processed < maxProcessPerCycle do
-        local saveItem = table.remove(saveQueue, 1)
-        local success, error = DataManager.SaveToFile(saveItem.filename, saveItem.data, true)
-        
-        if not success then
-            LogDataManager(string.format("Failed to save queued file %s: %s", saveItem.filename, error), Constants.LOG_LEVELS.ERROR)
-        end
-        
-        processed = processed + 1
-    end
-    
-    isProcessingSaves = false
-    lastSaveTime = GetGameTimer()
-    
-    if processed > 0 then
-        LogDataManager(string.format("Processed %d saves from queue (%d remaining)", processed, #saveQueue))
-    end
-end
-
--- ====================================================================
--- PLAYER DATA MANAGEMENT
--- ====================================================================
-
---- Save player data with validation and queuing
---- @param playerId number Player ID
---- @param playerData table Player data to save
---- @param immediate boolean Whether to save immediately or queue
---- @return boolean, string Success status and error message
-function DataManager.SavePlayerData(playerId, playerData, immediate)
-    -- Validate player ID
-    if not playerId or type(playerId) ~= "number" or playerId <= 0 then
-        return false, "Invalid player ID"
-    end
-    
-    -- Validate player data
-    if not playerData or type(playerData) ~= "table" then
-        return false, "Invalid player data"
-    end
-    
-    -- Add metadata
-    local dataToSave = {
-        playerId = playerId,
-        lastSaved = os.time(),
-        version = "1.2.0",
-        data = playerData
-    }
-    
-    local filename = GetPlayerDataFilename(playerId)
-    
-    if immediate then
-        return DataManager.SaveToFile(filename, dataToSave, true)
-    else
-        DataManager.QueueSave(filename, dataToSave, 2) -- Higher priority for player data
-        return true, nil
-    end
-end
-
---- Load player data with validation
---- @param playerId number Player ID
---- @return boolean, table Success status and player data or error message
-function DataManager.LoadPlayerData(playerId)
-    if not playerId or type(playerId) ~= "number" or playerId <= 0 then
-        return false, "Invalid player ID"
-    end
-    
-    local filename = GetPlayerDataFilename(playerId)
-    local success, fileData = DataManager.LoadFromFile(filename)
-    
-    if not success then
-        return false, fileData
-    end
-    
-    -- Validate file structure
-    if not fileData.data then
-        return false, "Invalid player data file structure"
-    end
-    
-    -- Version compatibility check
-    if fileData.version and fileData.version ~= "1.2.0" then
-        LogDataManager(string.format("Player %d data version mismatch: %s", playerId, fileData.version), Constants.LOG_LEVELS.WARN)
-        -- Could implement migration logic here
-    end
-    
-    return true, fileData.data
-end
-
---- Mark player data for saving (used by existing code)
---- @param playerId number Player ID
-function DataManager.MarkPlayerForSave(playerId)
-    if not pendingSaves[playerId] then
-        pendingSaves[playerId] = GetGameTimer()
-    end
-end
-
---- Process pending player saves
-local function ProcessPendingSaves()
-    for playerId, queueTime in pairs(pendingSaves) do
-        local playerData = GetCnrPlayerData(playerId)
-        if playerData then
-            DataManager.SavePlayerData(playerId, playerData, false)
-        end
-        pendingSaves[playerId] = nil
-    end
-end
-
--- ====================================================================
--- SYSTEM DATA MANAGEMENT
--- ====================================================================
-
---- Save system data (bans, purchase history, etc.)
---- @param dataType string Type of data (bans, purchases, banking)
---- @param data table Data to save
---- @return boolean, string Success status and error message
-function DataManager.SaveSystemData(dataType, data)
-    local filename
-    
-    if dataType == "bans" then
-        filename = Constants.FILES.BANS_FILE
-    elseif dataType == "purchases" then
-        filename = Constants.FILES.PURCHASE_HISTORY_FILE
-    elseif dataType == "banking" then
-        filename = Constants.FILES.BANKING_DATA_FILE
-    else
-        return false, "Unknown data type: " .. tostring(dataType)
-    end
-    
-    return DataManager.SaveToFile(filename, data, true)
-end
-
---- Load system data
---- @param dataType string Type of data to load
---- @return boolean, table Success status and loaded data or error message
-function DataManager.LoadSystemData(dataType)
-    local filename
-    
-    if dataType == "bans" then
-        filename = Constants.FILES.BANS_FILE
-    elseif dataType == "purchases" then
-        filename = Constants.FILES.PURCHASE_HISTORY_FILE
-    elseif dataType == "banking" then
-        filename = Constants.FILES.BANKING_DATA_FILE
-    else
-        return false, "Unknown data type: " .. tostring(dataType)
-    end
-    
-    return DataManager.LoadFromFile(filename)
-end
-
--- ====================================================================
--- MONITORING AND STATISTICS
--- ====================================================================
-
---- Get save statistics
---- @return table Save statistics
-function DataManager.GetStats()
-    return {
-        totalSaves = saveStats.totalSaves,
-        failedSaves = saveStats.failedSaves,
-        successRate = saveStats.totalSaves > 0 and ((saveStats.totalSaves - saveStats.failedSaves) / saveStats.totalSaves * 100) or 0,
-        averageSaveTime = saveStats.averageSaveTime,
-        lastSaveTime = saveStats.lastSaveTime,
-        queueSize = #saveQueue,
-        pendingSaves = tablelength(pendingSaves)
-    }
-end
-
---- Log current statistics
-function DataManager.LogStats()
-    local stats = DataManager.GetStats()
-    LogDataManager(string.format(
-        "Stats - Total: %d, Failed: %d, Success Rate: %.1f%%, Avg Time: %.1fms, Queue: %d, Pending: %d",
-        stats.totalSaves, stats.failedSaves, stats.successRate, 
-        stats.averageSaveTime, stats.queueSize, stats.pendingSaves
-    ))
-end
-
--- ====================================================================
--- DATA MANAGER INITIALIZATION AND CLEANUP
--- ====================================================================
-
---- Initialize the data manager
-function DataManager.Initialize()
-    LogDataManager("Data Manager initialized")
-    
-    -- Schedule backups for important files
-    DataManager.ScheduleBackup(Constants.FILES.BANS_FILE)
-    DataManager.ScheduleBackup(Constants.FILES.PURCHASE_HISTORY_FILE)
-    DataManager.ScheduleBackup(Constants.FILES.BANKING_DATA_FILE)
-    
-    -- Start processing threads
-    Citizen.CreateThread(function()
-        while true do
-            Citizen.Wait(Constants.TIME_MS.SAVE_INTERVAL)
-            ProcessSaveQueue()
-            ProcessPendingSaves()
-            ProcessScheduledBackups()
-        end
-    end)
-    
-    -- Statistics logging thread
-    Citizen.CreateThread(function()
-        while true do
-            Citizen.Wait(10 * Constants.TIME_MS.MINUTE) -- Every 10 minutes
-            DataManager.LogStats()
-        end
-    end)
-end
-
---- Cleanup on resource stop
-function DataManager.Cleanup()
-    LogDataManager("Processing final saves before shutdown...")
-    
-    -- Process all pending saves immediately
-    ProcessPendingSaves()
-    
-    -- Process entire save queue
-    while #saveQueue > 0 do
-        ProcessSaveQueue()
-        Citizen.Wait(100)
-    end
-    
-    LogDataManager("Data Manager cleanup completed")
-end
-
--- Initialize when loaded
-DataManager.Initialize()
-
--- ====================================================================
--- SECURE TRANSACTIONS SYSTEM (from secure_transactions.lua)
--- ====================================================================
-
--- Initialize SecureTransactions module
-SecureTransactions = SecureTransactions or {}
-
--- Transaction tracking
-local activeTransactions = {}
-local transactionHistory = {}
-
--- Statistics
-local transactionStats = {
-    totalTransactions = 0,
-    successfulTransactions = 0,
-    failedTransactions = 0,
-    totalMoneyTransferred = 0,
-    averageTransactionTime = 0
-}
-
--- ====================================================================
--- TRANSACTION UTILITY FUNCTIONS
--- ====================================================================
-
---- Generate unique transaction ID
---- @return string Unique transaction ID
-local function GenerateTransactionId()
-    return string.format("txn_%d_%d", GetGameTimer(), math.random(100000, 999999))
-end
-
---- Log transaction operations
---- @param playerId number Player ID
---- @param operation string Operation type
---- @param message string Log message
---- @param level string Log level
-local function LogTransaction(playerId, operation, message, level)
-    level = level or Constants.LOG_LEVELS.INFO
-    local playerName = GetPlayerName(playerId) or "Unknown"
-    
-    if level == Constants.LOG_LEVELS.ERROR or level == Constants.LOG_LEVELS.WARN then
-        print(string.format("[CNR_SECURE_TRANSACTIONS] [%s] Player %s (%d) - %s: %s", 
-            string.upper(level), playerName, playerId, operation, message))
-    end
-end
-
---- Record transaction in history
---- @param transactionData table Transaction data
-local function RecordTransaction(transactionData)
-    table.insert(transactionHistory, transactionData)
-    
-    -- Keep only last 1000 transactions to prevent memory issues
-    if #transactionHistory > 1000 then
-        table.remove(transactionHistory, 1)
-    end
-end
-
--- ====================================================================
--- CORE TRANSACTION FUNCTIONS
--- ====================================================================
-
---- Process item purchase transaction
---- @param playerId number Player ID
---- @param itemId string Item ID
---- @param quantity number Quantity to purchase
---- @param storeType string Store type
---- @return boolean, string Success status and error message
-function SecureTransactions.ProcessPurchase(playerId, itemId, quantity, storeType)
-    local startTime = GetGameTimer()
-    transactionStats.totalTransactions = transactionStats.totalTransactions + 1
-    
-    local transactionId = GenerateTransactionId()
-    
-    -- Validate inputs
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, error
-    end
-    
-    local validItem, itemConfig, itemError = Validation.ValidateItem(itemId)
-    if not validItem then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, itemError
-    end
-    
-    local validQuantity, validatedQuantity, quantityError = Validation.ValidateQuantity(quantity)
-    if not validQuantity then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, quantityError
-    end
-    
-    -- Rate limit purchases
-    if not Validation.CheckRateLimit(playerId, "purchases", 
-        Constants.VALIDATION.MAX_PURCHASES_PER_MINUTE, 
-        Constants.TIME_MS.MINUTE) then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, Constants.ERROR_MESSAGES.RATE_LIMITED
-    end
-    
-    -- Get player data
-    local playerData = GetCnrPlayerData(playerId)
-    if not playerData then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    -- Validate purchase
-    local validPurchase, totalCost, purchaseError = Validation.ValidateItemPurchase(
-        playerId, itemConfig, validatedQuantity, playerData)
-    if not validPurchase then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, purchaseError
-    end
-    
-    -- Start transaction
-    activeTransactions[transactionId] = {
-        playerId = playerId,
-        type = "purchase",
-        itemId = itemId,
-        quantity = validatedQuantity,
-        cost = totalCost,
-        startTime = startTime
-    }
-    
-    -- Deduct money
-    playerData.money = playerData.money - totalCost
-    
-    -- Add item to inventory
-    local addSuccess, addError = SecureInventory.AddItem(playerId, itemId, validatedQuantity, "purchase")
-    if not addSuccess then
-        -- Rollback money deduction
-        playerData.money = playerData.money + totalCost
-        activeTransactions[transactionId] = nil
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, "Failed to add item to inventory: " .. addError
-    end
-    
-    -- Complete transaction
-    activeTransactions[transactionId] = nil
-    transactionStats.successfulTransactions = transactionStats.successfulTransactions + 1
-    transactionStats.totalMoneyTransferred = transactionStats.totalMoneyTransferred + totalCost
-    
-    -- Record transaction
-    RecordTransaction({
-        id = transactionId,
-        playerId = playerId,
-        type = "purchase",
-        itemId = itemId,
-        quantity = validatedQuantity,
-        cost = totalCost,
-        storeType = storeType,
-        timestamp = os.time(),
-        success = true
-    })
-    
-    -- Save player data
-    DataManager.MarkPlayerForSave(playerId)
-    
-    -- Update statistics
-    local transactionTime = GetGameTimer() - startTime
-    transactionStats.averageTransactionTime = (transactionStats.averageTransactionTime + transactionTime) / 2
-    
-    LogTransaction(playerId, "PURCHASE", 
-        string.format("Purchased %d x %s for $%d", validatedQuantity, itemId, totalCost))
-    
-    return true, nil
-end
-
---- Process item sale transaction
---- @param playerId number Player ID
---- @param itemId string Item ID
---- @param quantity number Quantity to sell
---- @return boolean, string Success status and error message
-function SecureTransactions.ProcessSale(playerId, itemId, quantity)
-    local startTime = GetGameTimer()
-    transactionStats.totalTransactions = transactionStats.totalTransactions + 1
-    
-    local transactionId = GenerateTransactionId()
-    
-    -- Validate inputs
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, error
-    end
-    
-    local validItem, itemConfig, itemError = Validation.ValidateItem(itemId)
-    if not validItem then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, itemError
-    end
-    
-    local validQuantity, validatedQuantity, quantityError = Validation.ValidateQuantity(quantity)
-    if not validQuantity then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, quantityError
-    end
-    
-    -- Get player data
-    local playerData = GetCnrPlayerData(playerId)
-    if not playerData then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    -- Validate sale
-    local validSale, saleError = Validation.ValidateItemSale(playerId, itemId, validatedQuantity, playerData)
-    if not validSale then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, saleError
-    end
-    
-    -- Calculate sale price (typically 50% of purchase price)
-    local salePrice = math.floor((itemConfig.basePrice or 0) * validatedQuantity * 0.5)
-    
-    -- Start transaction
-    activeTransactions[transactionId] = {
-        playerId = playerId,
-        type = "sale",
-        itemId = itemId,
-        quantity = validatedQuantity,
-        price = salePrice,
-        startTime = startTime
-    }
-    
-    -- Remove item from inventory
-    local removeSuccess, removeError = SecureInventory.RemoveItem(playerId, itemId, validatedQuantity, "sale")
-    if not removeSuccess then
-        activeTransactions[transactionId] = nil
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, "Failed to remove item from inventory: " .. removeError
-    end
-    
-    -- Add money
-    playerData.money = (playerData.money or 0) + salePrice
-    
-    -- Complete transaction
-    activeTransactions[transactionId] = nil
-    transactionStats.successfulTransactions = transactionStats.successfulTransactions + 1
-    transactionStats.totalMoneyTransferred = transactionStats.totalMoneyTransferred + salePrice
-    
-    -- Record transaction
-    RecordTransaction({
-        id = transactionId,
-        playerId = playerId,
-        type = "sale",
-        itemId = itemId,
-        quantity = validatedQuantity,
-        price = salePrice,
-        timestamp = os.time(),
-        success = true
-    })
-    
-    -- Save player data
-    DataManager.MarkPlayerForSave(playerId)
-    
-    -- Update statistics
-    local transactionTime = GetGameTimer() - startTime
-    transactionStats.averageTransactionTime = (transactionStats.averageTransactionTime + transactionTime) / 2
-    
-    LogTransaction(playerId, "SALE", 
-        string.format("Sold %d x %s for $%d", validatedQuantity, itemId, salePrice))
-    
-    return true, nil
-end
-
---- Transfer money between players
---- @param fromPlayerId number Source player ID
---- @param toPlayerId number Target player ID
---- @param amount number Amount to transfer
---- @param reason string Transfer reason
---- @return boolean, string Success status and error message
-function SecureTransactions.TransferMoney(fromPlayerId, toPlayerId, amount, reason)
-    local startTime = GetGameTimer()
-    transactionStats.totalTransactions = transactionStats.totalTransactions + 1
-    
-    local transactionId = GenerateTransactionId()
-    
-    -- Validate inputs
-    local validFrom, errorFrom = Validation.ValidatePlayer(fromPlayerId)
-    if not validFrom then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, errorFrom
-    end
-    
-    local validTo, errorTo = Validation.ValidatePlayer(toPlayerId)
-    if not validTo then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, errorTo
-    end
-    
-    local validAmount, validatedAmount, amountError = Validation.ValidateMoney(amount, false)
-    if not validAmount then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, amountError
-    end
-    
-    -- Prevent self-transfer
-    if fromPlayerId == toPlayerId then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, "Cannot transfer money to yourself"
-    end
-    
-    -- Get player data
-    local fromPlayerData = GetCnrPlayerData(fromPlayerId)
-    local toPlayerData = GetCnrPlayerData(toPlayerId)
-    
-    if not fromPlayerData or not toPlayerData then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    -- Validate sender has sufficient funds
-    local validFunds, fundsError = Validation.ValidatePlayerFunds(fromPlayerId, validatedAmount, fromPlayerData)
-    if not validFunds then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, fundsError
-    end
-    
-    -- Start transaction
-    activeTransactions[transactionId] = {
-        fromPlayerId = fromPlayerId,
-        toPlayerId = toPlayerId,
-        type = "transfer",
-        amount = validatedAmount,
-        reason = reason,
-        startTime = startTime
-    }
-    
-    -- Transfer money
-    fromPlayerData.money = fromPlayerData.money - validatedAmount
-    toPlayerData.money = (toPlayerData.money or 0) + validatedAmount
-    
-    -- Complete transaction
-    activeTransactions[transactionId] = nil
-    transactionStats.successfulTransactions = transactionStats.successfulTransactions + 1
-    transactionStats.totalMoneyTransferred = transactionStats.totalMoneyTransferred + validatedAmount
-    
-    -- Record transaction
-    RecordTransaction({
-        id = transactionId,
-        fromPlayerId = fromPlayerId,
-        toPlayerId = toPlayerId,
-        type = "transfer",
-        amount = validatedAmount,
-        reason = reason,
-        timestamp = os.time(),
-        success = true
-    })
-    
-    -- Save both players' data
-    DataManager.MarkPlayerForSave(fromPlayerId)
-    DataManager.MarkPlayerForSave(toPlayerId)
-    
-    -- Update statistics
-    local transactionTime = GetGameTimer() - startTime
-    transactionStats.averageTransactionTime = (transactionStats.averageTransactionTime + transactionTime) / 2
-    
-    LogTransaction(fromPlayerId, "TRANSFER_OUT", 
-        string.format("Transferred $%d to player %d (%s)", validatedAmount, toPlayerId, reason or "no reason"))
-    LogTransaction(toPlayerId, "TRANSFER_IN", 
-        string.format("Received $%d from player %d (%s)", validatedAmount, fromPlayerId, reason or "no reason"))
-    
-    return true, nil
-end
-
---- Get transaction statistics
---- @return table Transaction statistics
-function SecureTransactions.GetStats()
-    return {
-        totalTransactions = transactionStats.totalTransactions,
-        successfulTransactions = transactionStats.successfulTransactions,
-        failedTransactions = transactionStats.failedTransactions,
-        successRate = transactionStats.totalTransactions > 0 and 
-            (transactionStats.successfulTransactions / transactionStats.totalTransactions * 100) or 0,
-        totalMoneyTransferred = transactionStats.totalMoneyTransferred,
-        averageTransactionTime = transactionStats.averageTransactionTime,
-        activeTransactions = tablelength(activeTransactions)
-    }
-end
-
---- Initialize secure transactions system
-function SecureTransactions.Initialize()
-    print("[CNR_SECURE_TRANSACTIONS] Secure Transactions System initialized")
-    
-    -- Statistics logging thread
-    Citizen.CreateThread(function()
-        while true do
-            Citizen.Wait(15 * Constants.TIME_MS.MINUTE) -- Every 15 minutes
-            local stats = SecureTransactions.GetStats()
-            print(string.format("[CNR_SECURE_TRANSACTIONS] Stats - Total: %d, Success: %d, Failed: %d, Success Rate: %.1f%%, Money: $%d",
-                stats.totalTransactions, stats.successfulTransactions, stats.failedTransactions, 
-                stats.successRate, stats.totalMoneyTransferred))
-        end
-    end)
-end
-
---- Cleanup transaction data for disconnected player
---- @param playerId number Player ID
-function SecureTransactions.CleanupPlayer(playerId)
-    -- Remove any active transactions for this player
-    for transactionId, transaction in pairs(activeTransactions) do
-        if transaction.playerId == playerId or transaction.fromPlayerId == playerId or transaction.toPlayerId == playerId then
-            activeTransactions[transactionId] = nil
-        end
-    end
-end
-
--- Initialize when loaded
-SecureTransactions.Initialize()
-
--- ====================================================================
--- PLAYER MANAGER SYSTEM (from player_manager.lua)
--- ====================================================================
-
--- Initialize PlayerManager module
-PlayerManager = PlayerManager or {}
-
--- Player data cache (replaces global playersData)
-local playerDataCache = {}
-local playerLoadingStates = {}
-
--- Statistics
-local playerStats = {
-    totalLoads = 0,
-    totalSaves = 0,
-    failedLoads = 0,
-    failedSaves = 0,
-    averageLoadTime = 0,
-    averageSaveTime = 0
-}
-
--- ====================================================================
--- PLAYER MANAGER UTILITY FUNCTIONS
--- ====================================================================
-
---- Log player management operations
---- @param playerId number Player ID
---- @param operation string Operation type
---- @param message string Log message
---- @param level string Log level
-local function LogPlayerManager(playerId, operation, message, level)
-    level = level or Constants.LOG_LEVELS.INFO
-    local playerName = GetPlayerName(playerId) or "Unknown"
-    
-    if level == Constants.LOG_LEVELS.ERROR or level == Constants.LOG_LEVELS.WARN then
-        print(string.format("[CNR_PLAYER_MANAGER] [%s] Player %s (%d) - %s: %s", 
-            string.upper(level), playerName, playerId, operation, message))
-    end
-end
-
---- Get player license identifier safely
---- @param playerId number Player ID
---- @return string, boolean License identifier and success status
-local function GetPlayerLicenseSafe(playerId)
-    local identifiers = GetPlayerIdentifiers(playerId)
-    if not identifiers then
-        return nil, false
-    end
-    
-    for _, identifier in ipairs(identifiers) do
-        if string.find(identifier, "license:") then
-            return identifier, true
-        end
-    end
-    
-    return nil, false
-end
-
---- Create default player data structure
---- @param playerId number Player ID
---- @return table Default player data
-local function CreateDefaultPlayerData(playerId)
-    local playerPed = GetPlayerPed(tostring(playerId))
-    local initialCoords = vector3(0, 0, 70) -- Default spawn location
-    
-    if playerPed and playerPed ~= 0 then
-        local coords = GetEntityCoords(playerPed)
-        if coords then
-            initialCoords = coords
-        end
-    end
-    
-    return {
-        -- Basic player information
-        playerId = playerId,
-        license = GetPlayerLicenseSafe(playerId),
-        name = GetPlayerName(playerId) or "Unknown",
-        
-        -- Game state
-        role = Constants.ROLES.CITIZEN,
-        level = 1,
-        xp = 0,
-        money = Constants.PLAYER_LIMITS.DEFAULT_STARTING_MONEY,
-        
-        -- Position and world state
-        lastKnownPosition = initialCoords,
-        
-        -- Systems
-        inventory = {},
-        
-        -- Timestamps
-        firstJoined = os.time(),
-        lastSeen = os.time(),
-        
-        -- Flags
-        isDataLoaded = false,
-        
-        -- Statistics
-        totalPlayTime = 0,
-        sessionsPlayed = 1,
-        
-        -- Version for data migration
-        dataVersion = "1.2.0"
-    }
-end
-
---- Validate player data structure
---- @param playerData table Player data to validate
---- @return boolean, table Success status and validation issues
-local function ValidatePlayerDataStructure(playerData)
-    local issues = {}
-    
-    if not playerData or type(playerData) ~= "table" then
-        table.insert(issues, "Player data is not a table")
-        return false, issues
-    end
-    
-    -- Check required fields
-    local requiredFields = {
-        "playerId", "role", "level", "xp", "money", "inventory"
-    }
-    
-    for _, field in ipairs(requiredFields) do
-        if playerData[field] == nil then
-            table.insert(issues, string.format("Missing required field: %s", field))
-        end
-    end
-    
-    -- Validate field types and ranges
-    if playerData.level and (type(playerData.level) ~= "number" or playerData.level < 1 or playerData.level > Constants.PLAYER_LIMITS.MAX_PLAYER_LEVEL) then
-        table.insert(issues, "Invalid level value")
-    end
-    
-    if playerData.money and (type(playerData.money) ~= "number" or playerData.money < 0) then
-        table.insert(issues, "Invalid money value")
-    end
-    
-    if playerData.xp and (type(playerData.xp) ~= "number" or playerData.xp < 0) then
-        table.insert(issues, "Invalid XP value")
-    end
-    
-    if playerData.inventory and type(playerData.inventory) ~= "table" then
-        table.insert(issues, "Inventory is not a table")
-    end
-    
-    return #issues == 0, issues
-end
-
---- Fix player data issues
---- @param playerData table Player data to fix
---- @param playerId number Player ID
---- @return table Fixed player data
-local function FixPlayerDataIssues(playerData, playerId)
-    -- Ensure basic structure
-    if not playerData or type(playerData) ~= "table" then
-        LogPlayerManager(playerId, "fix_data", "Creating new data structure due to corruption")
-        return CreateDefaultPlayerData(playerId)
-    end
-    
-    -- Fix missing or invalid fields
-    playerData.playerId = playerData.playerId or playerId
-    playerData.role = playerData.role or Constants.ROLES.CITIZEN
-    playerData.level = math.max(1, math.min(playerData.level or 1, Constants.PLAYER_LIMITS.MAX_PLAYER_LEVEL))
-    playerData.xp = math.max(0, playerData.xp or 0)
-    playerData.money = math.max(0, playerData.money or Constants.PLAYER_LIMITS.DEFAULT_STARTING_MONEY)
-    playerData.inventory = playerData.inventory or {}
-    playerData.lastSeen = os.time()
-    playerData.dataVersion = "1.2.0"
-    
-    -- Validate inventory integrity
-    if SecureInventory then
-        SecureInventory.FixInventoryIntegrity(playerId)
-    end
-    
-    return playerData
-end
-
--- ====================================================================
--- CORE PLAYER DATA FUNCTIONS
--- ====================================================================
-
---- Load player data with comprehensive validation and error handling
---- @param playerId number Player ID
---- @return boolean, string Success status and error message
-function PlayerManager.LoadPlayerData(playerId)
-    local startTime = GetGameTimer()
-    
-    -- Validate player
-    local validPlayer, playerError = Validation.ValidatePlayer(playerId)
-    if not validPlayer then
-        return false, playerError
-    end
-    
-    -- Check if already loading
-    if playerLoadingStates[playerId] then
-        LogPlayerManager(playerId, "load", "Data already loading, skipping duplicate request")
-        return false, "Data already loading"
-    end
-    
-    playerLoadingStates[playerId] = true
-    
-    -- Attempt to load from DataManager
-    local success, playerData = DataManager.LoadPlayerData(playerId)
-    
-    if success then
-        -- Validate loaded data
-        local validData, issues = ValidatePlayerDataStructure(playerData)
-        if not validData then
-            LogPlayerManager(playerId, "load", 
-                string.format("Data validation failed: %s", table.concat(issues, ", ")), 
-                Constants.LOG_LEVELS.WARN)
-            playerData = FixPlayerDataIssues(playerData, playerId)
-        end
-    else
-        -- Create new player data
-        LogPlayerManager(playerId, "load", "Creating new player data (first time or load failed)")
-        playerData = CreateDefaultPlayerData(playerId)
-    end
-    
-    -- Apply any necessary data migrations
-    playerData = PlayerManager.MigratePlayerData(playerData, playerId)
-    
-    -- Cache the data
-    playerDataCache[playerId] = playerData
-    playerData.isDataLoaded = true
-    
-    -- Update statistics
-    playerStats.totalLoads = playerStats.totalLoads + 1
-    if not success then
-        playerStats.failedLoads = playerStats.failedLoads + 1
-    end
-    
-    local loadTime = GetGameTimer() - startTime
-    playerStats.averageLoadTime = (playerStats.averageLoadTime + loadTime) / 2
-    
-    playerLoadingStates[playerId] = nil
-    
-    LogPlayerManager(playerId, "load", 
-        string.format("Data loaded successfully (took %dms)", loadTime))
-    
-    return true, nil
-end
-
---- Save player data with validation and error handling
---- @param playerId number Player ID
---- @param immediate boolean Whether to save immediately or queue
---- @return boolean, string Success status and error message
-function PlayerManager.SavePlayerData(playerId, immediate)
-    local startTime = GetGameTimer()
-    immediate = immediate or false
-    
-    -- Validate player
-    local validPlayer, playerError = Validation.ValidatePlayer(playerId)
-    if not validPlayer then
-        return false, playerError
-    end
-    
-    -- Get player data from cache
-    local playerData = playerDataCache[playerId]
-    if not playerData then
-        return false, "No player data to save"
-    end
-    
-    -- Update last seen timestamp
-    playerData.lastSeen = os.time()
-    
-    -- Update position if player is online
-    local playerPed = GetPlayerPed(tostring(playerId))
-    if playerPed and playerPed ~= 0 then
-        local coords = GetEntityCoords(playerPed)
-        if coords then
-            playerData.lastKnownPosition = coords
-        end
-    end
-    
-    -- Validate data before saving
-    local validData, issues = ValidatePlayerDataStructure(playerData)
-    if not validData then
-        LogPlayerManager(playerId, "save", 
-            string.format("Data validation failed before save: %s", table.concat(issues, ", ")), 
-            Constants.LOG_LEVELS.ERROR)
-        return false, "Data validation failed"
-    end
-    
-    -- Save using DataManager
-    local success, error = DataManager.SavePlayerData(playerId, playerData, immediate)
-    
-    -- Update statistics
-    playerStats.totalSaves = playerStats.totalSaves + 1
-    if not success then
-        playerStats.failedSaves = playerStats.failedSaves + 1
-    end
-    
-    local saveTime = GetGameTimer() - startTime
-    playerStats.averageSaveTime = (playerStats.averageSaveTime + saveTime) / 2
-    
-    if success then
-        LogPlayerManager(playerId, "save", 
-            string.format("Data saved successfully (took %dms, immediate: %s)", 
-                saveTime, tostring(immediate)))
-    else
-        LogPlayerManager(playerId, "save", 
-            string.format("Save failed: %s", error), 
-            Constants.LOG_LEVELS.ERROR)
-    end
-    
-    return success, error
-end
-
---- Get player data from cache with validation
---- @param playerId number Player ID
---- @return table, boolean Player data and success status
-function PlayerManager.GetPlayerData(playerId)
-    -- Validate player
-    local validPlayer, playerError = Validation.ValidatePlayer(playerId)
-    if not validPlayer then
-        return nil, false
-    end
-    
-    local playerData = playerDataCache[playerId]
-    if not playerData then
-        LogPlayerManager(playerId, "get_data", "No cached data found", Constants.LOG_LEVELS.WARN)
-        return nil, false
-    end
-    
-    if not playerData.isDataLoaded then
-        LogPlayerManager(playerId, "get_data", "Data not fully loaded", Constants.LOG_LEVELS.WARN)
-        return nil, false
-    end
-    
-    return playerData, true
-end
-
---- Set player data in cache with validation
---- @param playerId number Player ID
---- @param playerData table Player data to set
---- @return boolean Success status
-function PlayerManager.SetPlayerData(playerId, playerData)
-    -- Validate player
-    local validPlayer, playerError = Validation.ValidatePlayer(playerId)
-    if not validPlayer then
-        return false
-    end
-    
-    -- Validate data structure
-    local validData, issues = ValidatePlayerDataStructure(playerData)
-    if not validData then
-        LogPlayerManager(playerId, "set_data", 
-            string.format("Invalid data structure: %s", table.concat(issues, ", ")), 
-            Constants.LOG_LEVELS.ERROR)
-        return false
-    end
-    
-    playerDataCache[playerId] = playerData
-    DataManager.MarkPlayerForSave(playerId)
-    
-    return true
-end
-
--- ====================================================================
--- DATA MIGRATION SYSTEM
--- ====================================================================
-
---- Migrate player data to current version
---- @param playerData table Player data to migrate
---- @param playerId number Player ID
---- @return table Migrated player data
-function PlayerManager.MigratePlayerData(playerData, playerId)
-    local currentVersion = "1.2.0"
-    local dataVersion = playerData.dataVersion or "1.0.0"
-    
-    if dataVersion == currentVersion then
-        return playerData -- No migration needed
-    end
-    
-    LogPlayerManager(playerId, "migrate", 
-        string.format("Migrating data from version %s to %s", dataVersion, currentVersion))
-    
-    -- Migration logic for different versions
-    if dataVersion == "1.0.0" or dataVersion == "1.1.0" then
-        -- Add new fields introduced in 1.2.0
-        playerData.dataVersion = currentVersion
-        playerData.totalPlayTime = playerData.totalPlayTime or 0
-        playerData.sessionsPlayed = playerData.sessionsPlayed or 1
-        
-        -- Ensure inventory structure is correct
-        if not playerData.inventory or type(playerData.inventory) ~= "table" then
-            playerData.inventory = {}
-        end
-        
-        -- Fix any legacy role names
-        if playerData.role == "civilian" then
-            playerData.role = Constants.ROLES.CITIZEN
-        end
-    end
-    
-    LogPlayerManager(playerId, "migrate", "Data migration completed successfully")
-    return playerData
-end
-
--- ====================================================================
--- PLAYER LIFECYCLE MANAGEMENT
--- ====================================================================
-
---- Handle player connection
---- @param playerId number Player ID
-function PlayerManager.OnPlayerConnected(playerId)
-    LogPlayerManager(playerId, "connect", "Player connected, initializing data")
-    
-    -- Load player data
-    local success, error = PlayerManager.LoadPlayerData(playerId)
-    if not success then
-        LogPlayerManager(playerId, "connect", 
-            string.format("Failed to load data: %s", error), 
-            Constants.LOG_LEVELS.ERROR)
-        return
-    end
-    
-    -- Initialize player systems
-    PlayerManager.InitializePlayerSystems(playerId)
-    
-    LogPlayerManager(playerId, "connect", "Player initialization completed")
-end
-
---- Handle player disconnection
---- @param playerId number Player ID
---- @param reason string Disconnect reason
-function PlayerManager.OnPlayerDisconnected(playerId, reason)
-    LogPlayerManager(playerId, "disconnect", 
-        string.format("Player disconnected (reason: %s), saving data", reason or "unknown"))
-    
-    -- Save player data immediately
-    local success, error = PlayerManager.SavePlayerData(playerId, true)
-    if not success then
-        LogPlayerManager(playerId, "disconnect", 
-            string.format("Failed to save data: %s", error), 
-            Constants.LOG_LEVELS.ERROR)
-    end
-    
-    -- Clean up player from cache and other systems
-    PlayerManager.CleanupPlayer(playerId)
-    
-    LogPlayerManager(playerId, "disconnect", "Player cleanup completed")
-end
-
---- Initialize player systems after data load
---- @param playerId number Player ID
-function PlayerManager.InitializePlayerSystems(playerId)
-    local playerData = playerDataCache[playerId]
-    if not playerData then
-        LogPlayerManager(playerId, "init_systems", "No player data available", Constants.LOG_LEVELS.ERROR)
-        return
-    end
-    
-    -- Set player role (this will trigger role-specific initialization)
-    PlayerManager.SetPlayerRole(playerId, playerData.role, true)
-    
-    -- Apply level-based perks
-    if ApplyPerks then
-        ApplyPerks(playerId, playerData.level, playerData.role)
-    end
-    
-    -- Initialize inventory
-    if not playerData.inventory then
-        playerData.inventory = {}
-    end
-    
-    -- Sync data to client
-    PlayerManager.SyncPlayerDataToClient(playerId)
-    
-    LogPlayerManager(playerId, "init_systems", "Player systems initialized")
-end
-
---- Sync player data to client
---- @param playerId number Player ID
-function PlayerManager.SyncPlayerDataToClient(playerId)
-    local playerData = playerDataCache[playerId]
-    if not playerData then return end
-    
-    -- Send minimized inventory for performance
-    if SecureInventory then
-        local success, inventory = SecureInventory.GetInventory(playerId)
-        if success then
-            TriggerClientEvent('cnr:syncInventory', playerId, 
-                MinimizeInventoryForSync(inventory))
-        end
-    end
-    
-    -- Send other player data
-    TriggerClientEvent('cnr:updatePlayerData', playerId, {
-        role = playerData.role,
-        level = playerData.level,
-        xp = playerData.xp,
-        money = playerData.money
-    })
-end
-
---- Clean up player data and references
---- @param playerId number Player ID
-function PlayerManager.CleanupPlayer(playerId)
-    -- Remove from cache
-    playerDataCache[playerId] = nil
-    playerLoadingStates[playerId] = nil
-    
-    -- Clean up other systems
-    if Validation then
-        Validation.CleanupPlayer(playerId)
-    end
-    
-    if SecureInventory then
-        SecureInventory.CleanupPlayer(playerId)
-    end
-    
-    if SecureTransactions then
-        SecureTransactions.CleanupPlayer(playerId)
-    end
-    
-    LogPlayerManager(playerId, "cleanup", "Player cleanup completed")
-end
-
--- ====================================================================
--- ROLE MANAGEMENT
--- ====================================================================
-
---- Set player role with validation and system updates
---- @param playerId number Player ID
---- @param role string New role
---- @param skipNotify boolean Whether to skip notification
---- @return boolean Success status
-function PlayerManager.SetPlayerRole(playerId, role, skipNotify)
-    -- Validate player
-    local validPlayer, playerError = Validation.ValidatePlayer(playerId)
-    if not validPlayer then
-        return false
-    end
-    
-    -- Validate role
-    local validRoles = {Constants.ROLES.COP, Constants.ROLES.ROBBER, Constants.ROLES.CITIZEN}
-    local isValidRole = false
-    for _, validRole in ipairs(validRoles) do
-        if role == validRole then
-            isValidRole = true
-            break
-        end
-    end
-    
-    if not isValidRole then
-        LogPlayerManager(playerId, "set_role", 
-            string.format("Invalid role: %s", tostring(role)), 
-            Constants.LOG_LEVELS.ERROR)
-        return false
-    end
-    
-    local playerData = playerDataCache[playerId]
-    if not playerData then
-        LogPlayerManager(playerId, "set_role", "No player data available", Constants.LOG_LEVELS.ERROR)
-        return false
-    end
-    
-    local oldRole = playerData.role
-    playerData.role = role
-    
-    -- Update role-specific tracking (using existing global variables for compatibility)
-    if copsOnDuty then
-        copsOnDuty[playerId] = (role == Constants.ROLES.COP) or nil
-    end
-    
-    if robbersActive then
-        robbersActive[playerId] = (role == Constants.ROLES.ROBBER) or nil
-    end
-    
-    -- Mark for save
-    DataManager.MarkPlayerForSave(playerId)
-    
-    -- Notify player if not skipped
-    if not skipNotify then
-        TriggerClientEvent('cnr:showNotification', playerId, 
-            string.format("Role changed to %s", role), "success")
-    end
-    
-    LogPlayerManager(playerId, "set_role", 
-        string.format("Role changed from %s to %s", oldRole, role))
-    
-    return true
-end
-
---- Get player statistics
---- @return table Player manager statistics
-function PlayerManager.GetStats()
-    return {
-        totalLoads = playerStats.totalLoads,
-        totalSaves = playerStats.totalSaves,
-        failedLoads = playerStats.failedLoads,
-        failedSaves = playerStats.failedSaves,
-        loadSuccessRate = playerStats.totalLoads > 0 and ((playerStats.totalLoads - playerStats.failedLoads) / playerStats.totalLoads * 100) or 0,
-        saveSuccessRate = playerStats.totalSaves > 0 and ((playerStats.totalSaves - playerStats.failedSaves) / playerStats.totalSaves * 100) or 0,
-        averageLoadTime = playerStats.averageLoadTime,
-        averageSaveTime = playerStats.averageSaveTime,
-        activePlayers = tablelength(playerDataCache),
-        loadingPlayers = tablelength(playerLoadingStates)
-    }
-end
-
---- Log current statistics
-function PlayerManager.LogStats()
-    local stats = PlayerManager.GetStats()
-    print(string.format("[CNR_PLAYER_MANAGER] Stats - Loads: %d (%.1f%% success), Saves: %d (%.1f%% success), Active: %d",
-        stats.totalLoads, stats.loadSuccessRate, stats.totalSaves, stats.saveSuccessRate, stats.activePlayers))
-end
-
---- Initialize player manager
-function PlayerManager.Initialize()
-    print("[CNR_PLAYER_MANAGER] Player Manager initialized")
-    
-    -- Statistics logging thread
-    Citizen.CreateThread(function()
-        while true do
-            Citizen.Wait(10 * Constants.TIME_MS.MINUTE)
-            PlayerManager.LogStats()
-        end
-    end)
-end
-
--- Initialize when loaded
-PlayerManager.Initialize()
-
--- Update the global GetCnrPlayerData function to use PlayerManager
-function GetCnrPlayerData(playerId)
-    local playerData, success = PlayerManager.GetPlayerData(playerId)
-    return success and playerData or nil
-end
-
--- ====================================================================
--- PERFORMANCE OPTIMIZER SYSTEM (from performance_optimizer.lua)
--- ====================================================================
-
--- Initialize PerformanceOptimizer module
-PerformanceOptimizer = PerformanceOptimizer or {}
-
--- Performance monitoring data
-local performanceMetrics = {
-    frameTime = 0,
-    memoryUsage = 0,
-    activeThreads = 0,
-    networkEvents = 0,
-    lastUpdate = 0
-}
-
--- Optimized loop management
-local optimizedLoops = {}
-local loopCounter = 0
-
--- Event batching system
-local eventBatches = {}
-local batchTimers = {}
-
--- ====================================================================
--- LOOP OPTIMIZATION SYSTEM
--- ====================================================================
-
---- Adjust loop interval based on performance metrics
---- @param loopData table Loop data structure
---- @param lastExecutionTime number Last execution time in milliseconds
-local function AdjustLoopInterval(loopData, lastExecutionTime)
-    -- If execution time is high, increase interval
-    if lastExecutionTime > Constants.PERFORMANCE.MAX_EXECUTION_TIME_MS then
-        loopData.currentInterval = math.min(loopData.currentInterval * 1.2, loopData.maxInterval)
-    -- If execution time is low and we're not at base interval, decrease it
-    elseif lastExecutionTime < Constants.PERFORMANCE.MAX_EXECUTION_TIME_MS * 0.5 and 
-           loopData.currentInterval > loopData.baseInterval then
-        loopData.currentInterval = math.max(loopData.currentInterval * 0.9, loopData.baseInterval)
-    end
-    
-    -- Priority-based adjustments
-    if loopData.priority <= 2 then
-        -- High priority loops get preference
-        loopData.currentInterval = math.max(loopData.currentInterval * 0.8, loopData.baseInterval)
-    elseif loopData.priority >= 4 then
-        -- Low priority loops get throttled more aggressively
-        loopData.currentInterval = math.min(loopData.currentInterval * 1.5, loopData.maxInterval)
-    end
-end
-
---- Create an optimized loop that automatically adjusts its interval based on performance
---- @param callback function Function to execute
---- @param baseInterval number Base interval in milliseconds
---- @param maxInterval number Maximum interval in milliseconds
---- @param priority number Priority level (1-5, 1 being highest)
---- @return number Loop ID for management
-function PerformanceOptimizer.CreateOptimizedLoop(callback, baseInterval, maxInterval, priority)
-    loopCounter = loopCounter + 1
-    priority = priority or 3
-    maxInterval = maxInterval or baseInterval * 5
-    
-    local loopData = {
-        id = loopCounter,
-        callback = callback,
-        baseInterval = baseInterval,
-        maxInterval = maxInterval,
-        currentInterval = baseInterval,
-        priority = priority,
-        lastExecution = 0,
-        executionCount = 0,
-        totalExecutionTime = 0,
-        averageExecutionTime = 0,
-        active = true
-    }
-    
-    optimizedLoops[loopCounter] = loopData
-    
-    -- Start the loop thread
-    Citizen.CreateThread(function()
-        while loopData.active do
-            local startTime = GetGameTimer()
-            
-            -- Execute callback with error handling
-            local success, error = pcall(callback)
-            if not success then
-                print(string.format("[CNR_PERFORMANCE] Loop %d error: %s", loopData.id, tostring(error)))
-            end
-            
-            -- Update performance metrics
-            local executionTime = GetGameTimer() - startTime
-            loopData.executionCount = loopData.executionCount + 1
-            loopData.totalExecutionTime = loopData.totalExecutionTime + executionTime
-            loopData.averageExecutionTime = loopData.totalExecutionTime / loopData.executionCount
-            loopData.lastExecution = startTime
-            
-            -- Adjust interval based on performance
-            AdjustLoopInterval(loopData, executionTime)
-            
-            Citizen.Wait(loopData.currentInterval)
-        end
-    end)
-    
-    print(string.format("[CNR_PERFORMANCE] Created optimized loop %d (base: %dms, max: %dms, priority: %d)", 
-        loopCounter, baseInterval, maxInterval, priority))
-    
-    return loopCounter
-end
-
---- Stop an optimized loop
---- @param loopId number Loop ID to stop
-function PerformanceOptimizer.StopOptimizedLoop(loopId)
-    if optimizedLoops[loopId] then
-        optimizedLoops[loopId].active = false
-        optimizedLoops[loopId] = nil
-        print(string.format("[CNR_PERFORMANCE] Stopped optimized loop %d", loopId))
-    end
-end
-
--- ====================================================================
--- EVENT BATCHING SYSTEM
--- ====================================================================
-
---- Batch events to reduce network overhead
---- @param eventName string Event name
---- @param playerId number Player ID (or -1 for all players)
---- @param data any Event data
---- @param batchInterval number Batching interval in milliseconds
-function PerformanceOptimizer.BatchEvent(eventName, playerId, data, batchInterval)
-    batchInterval = batchInterval or 100 -- Default 100ms batching
-    
-    local batchKey = string.format("%s_%s", eventName, tostring(playerId))
-    
-    -- Initialize batch if it doesn't exist
-    if not eventBatches[batchKey] then
-        eventBatches[batchKey] = {
-            eventName = eventName,
-            playerId = playerId,
-            data = {},
-            count = 0
-        }
-    end
-    
-    -- Add data to batch
-    table.insert(eventBatches[batchKey].data, data)
-    eventBatches[batchKey].count = eventBatches[batchKey].count + 1
-    
-    -- Set timer if not already set
-    if not batchTimers[batchKey] then
-        batchTimers[batchKey] = Citizen.SetTimeout(batchInterval, function()
-            PerformanceOptimizer.FlushEventBatch(batchKey)
-        end)
-    end
-end
-
---- Flush a specific event batch
---- @param batchKey string Batch key
-function PerformanceOptimizer.FlushEventBatch(batchKey)
-    local batch = eventBatches[batchKey]
-    if not batch or batch.count == 0 then
-        return
-    end
-    
-    -- Send batched event
-    if batch.playerId == -1 then
-        -- Send to all players
-        TriggerClientEvent(batch.eventName, -1, batch.data)
-    else
-        -- Send to specific player
-        TriggerClientEvent(batch.eventName, batch.playerId, batch.data)
-    end
-    
-    -- Clean up
-    eventBatches[batchKey] = nil
-    batchTimers[batchKey] = nil
-    
-    print(string.format("[CNR_PERFORMANCE] Flushed batch %s with %d events", batchKey, batch.count))
-end
-
---- Flush all event batches immediately
-function PerformanceOptimizer.FlushAllBatches()
-    for batchKey, _ in pairs(eventBatches) do
-        PerformanceOptimizer.FlushEventBatch(batchKey)
-    end
-end
-
--- ====================================================================
--- MEMORY OPTIMIZATION
--- ====================================================================
-
---- Optimize table memory usage by removing nil values and compacting
---- @param tbl table Table to optimize
---- @return table Optimized table
-function PerformanceOptimizer.OptimizeTable(tbl)
-    if type(tbl) ~= "table" then
-        return tbl
-    end
-    
-    local optimized = {}
-    for k, v in pairs(tbl) do
-        if v ~= nil then
-            if type(v) == "table" then
-                optimized[k] = PerformanceOptimizer.OptimizeTable(v)
-            else
-                optimized[k] = v
-            end
-        end
-    end
-    
-    return optimized
-end
-
---- Clean up unused references and force garbage collection
-function PerformanceOptimizer.CleanupMemory()
-    -- Clean up optimized loops that are no longer active
-    for loopId, loopData in pairs(optimizedLoops) do
-        if not loopData.active then
-            optimizedLoops[loopId] = nil
-        end
-    end
-    
-    -- Clean up old event batches
-    local currentTime = GetGameTimer()
-    for batchKey, timer in pairs(batchTimers) do
-        if currentTime - timer > 5000 then -- 5 second timeout
-            eventBatches[batchKey] = nil
-            batchTimers[batchKey] = nil
-        end
-    end
-    
-    -- Force garbage collection
-    collectgarbage("collect")
-    
-    print("[CNR_PERFORMANCE] Memory cleanup completed")
-end
-
--- ====================================================================
--- PERFORMANCE MONITORING
--- ====================================================================
-
---- Update performance metrics
-local function UpdatePerformanceMetrics()
-    performanceMetrics.lastUpdate = GetGameTimer()
-    performanceMetrics.activeThreads = tablelength(optimizedLoops)
-    
-    -- Calculate memory usage (approximation)
-    local memBefore = collectgarbage("count")
-    collectgarbage("collect")
-    local memAfter = collectgarbage("count")
-    performanceMetrics.memoryUsage = memAfter
-    
-    -- Restore memory state
-    collectgarbage("restart")
-end
-
---- Get current performance metrics
---- @return table Performance metrics
-function PerformanceOptimizer.GetMetrics()
-    UpdatePerformanceMetrics()
-    return {
-        frameTime = performanceMetrics.frameTime,
-        memoryUsage = performanceMetrics.memoryUsage,
-        activeThreads = performanceMetrics.activeThreads,
-        networkEvents = performanceMetrics.networkEvents,
-        lastUpdate = performanceMetrics.lastUpdate,
-        optimizedLoops = tablelength(optimizedLoops),
-        eventBatches = tablelength(eventBatches)
-    }
-end
-
---- Log performance statistics
-function PerformanceOptimizer.LogStats()
-    local metrics = PerformanceOptimizer.GetMetrics()
-    print(string.format("[CNR_PERFORMANCE] Stats - Memory: %.1fKB, Threads: %d, Loops: %d, Batches: %d",
-        metrics.memoryUsage, metrics.activeThreads, metrics.optimizedLoops, metrics.eventBatches))
-    
-    -- Log individual loop performance
-    for loopId, loopData in pairs(optimizedLoops) do
-        if loopData.executionCount > 0 then
-            print(string.format("[CNR_PERFORMANCE] Loop %d - Avg: %.1fms, Count: %d, Interval: %dms",
-                loopId, loopData.averageExecutionTime, loopData.executionCount, loopData.currentInterval))
-        end
-    end
-end
-
---- Check for performance warnings
-function PerformanceOptimizer.CheckPerformanceWarnings()
-    local metrics = PerformanceOptimizer.GetMetrics()
-    
-    -- Memory warning
-    if metrics.memoryUsage > Constants.PERFORMANCE.MEMORY_WARNING_THRESHOLD_MB * 1024 then
-        print(string.format("[CNR_PERFORMANCE] WARNING: High memory usage: %.1fMB", 
-            metrics.memoryUsage / 1024))
-        PerformanceOptimizer.CleanupMemory()
-    end
-    
-    -- Loop performance warnings
-    for loopId, loopData in pairs(optimizedLoops) do
-        if loopData.averageExecutionTime > Constants.PERFORMANCE.MAX_EXECUTION_TIME_MS then
-            print(string.format("[CNR_PERFORMANCE] WARNING: Loop %d slow execution: %.1fms average",
-                loopId, loopData.averageExecutionTime))
-        end
-    end
-end
-
--- ====================================================================
--- OPTIMIZED REPLACEMENTS FOR COMMON PATTERNS
--- ====================================================================
-
---- Optimized player iteration with early exit and batching
---- @param callback function Function to call for each player
---- @param batchSize number Number of players to process per frame
-function PerformanceOptimizer.ForEachPlayerOptimized(callback, batchSize)
-    batchSize = batchSize or 10
-    local players = GetPlayers()
-    local currentBatch = 0
-    
-    Citizen.CreateThread(function()
-        for i, playerId in ipairs(players) do
-            -- Validate player is still online
-            if GetPlayerName(playerId) then
-                local success, error = pcall(callback, tonumber(playerId))
-                if not success then
-                    print(string.format("[CNR_PERFORMANCE] Player iteration error for %s: %s", 
-                        playerId, tostring(error)))
-                end
-            end
-            
-            currentBatch = currentBatch + 1
-            
-            -- Yield every batchSize players to prevent frame drops
-            if currentBatch >= batchSize then
-                currentBatch = 0
-                Citizen.Wait(0)
-            end
-        end
-    end)
-end
-
---- Optimized distance checking with caching
-local distanceCache = {}
-local distanceCacheTime = {}
-
-function PerformanceOptimizer.GetDistanceCached(pos1, pos2, cacheTime)
-    cacheTime = cacheTime or 1000 -- 1 second cache by default
-    
-    local cacheKey = string.format("%.1f_%.1f_%.1f_%.1f_%.1f_%.1f", 
-        pos1.x, pos1.y, pos1.z, pos2.x, pos2.y, pos2.z)
-    
-    local currentTime = GetGameTimer()
-    
-    -- Check cache
-    if distanceCache[cacheKey] and 
-       distanceCacheTime[cacheKey] and 
-       (currentTime - distanceCacheTime[cacheKey]) < cacheTime then
-        return distanceCache[cacheKey]
-    end
-    
-    -- Calculate distance
-    local distance = #(pos1 - pos2)
-    
-    -- Cache result
-    distanceCache[cacheKey] = distance
-    distanceCacheTime[cacheKey] = currentTime
-    
-    return distance
-end
-
---- Clean distance cache periodically
-local function CleanDistanceCache()
-    local currentTime = GetGameTimer()
-    local cleanupThreshold = 5000 -- 5 seconds
-    
-    for cacheKey, cacheTime in pairs(distanceCacheTime) do
-        if (currentTime - cacheTime) > cleanupThreshold then
-            distanceCache[cacheKey] = nil
-            distanceCacheTime[cacheKey] = nil
-        end
-    end
-end
-
--- ====================================================================
--- PERFORMANCE OPTIMIZER INITIALIZATION AND CLEANUP
--- ====================================================================
-
---- Initialize performance optimizer
-function PerformanceOptimizer.Initialize()
-    print("[CNR_PERFORMANCE] Performance Optimizer initialized")
-    
-    -- Create monitoring loop
-    PerformanceOptimizer.CreateOptimizedLoop(function()
-        PerformanceOptimizer.CheckPerformanceWarnings()
-    end, 30000, 60000, 4) -- Low priority, 30s base interval
-    
-    -- Create cleanup loop
-    PerformanceOptimizer.CreateOptimizedLoop(function()
-        PerformanceOptimizer.CleanupMemory()
-        CleanDistanceCache()
-    end, 60000, 120000, 5) -- Lowest priority, 1 minute base interval
-    
-    -- Create stats logging loop
-    PerformanceOptimizer.CreateOptimizedLoop(function()
-        PerformanceOptimizer.LogStats()
-    end, 300000, 600000, 5) -- Lowest priority, 5 minute base interval
-end
-
---- Cleanup on resource stop
-function PerformanceOptimizer.Cleanup()
-    print("[CNR_PERFORMANCE] Cleaning up performance optimizer...")
-    
-    -- Stop all optimized loops
-    for loopId, _ in pairs(optimizedLoops) do
-        PerformanceOptimizer.StopOptimizedLoop(loopId)
-    end
-    
-    -- Flush all event batches
-    PerformanceOptimizer.FlushAllBatches()
-    
-    -- Final memory cleanup
-    PerformanceOptimizer.CleanupMemory()
-    
-    print("[CNR_PERFORMANCE] Performance optimizer cleanup completed")
-end
-
--- Initialize when loaded
-PerformanceOptimizer.Initialize()
-
--- ====================================================================
--- INTEGRATION MANAGER SYSTEM (from integration_manager.lua)
--- ====================================================================
-
--- Initialize IntegrationManager module
-IntegrationManager = IntegrationManager or {}
-
--- Integration status tracking
-local integrationStatus = {
-    initialized = false,
-    modulesLoaded = {},
-    migrationComplete = false,
-    startTime = 0
-}
-
--- Legacy compatibility layer
-local legacyFunctions = {}
-
--- ====================================================================
--- INITIALIZATION SYSTEM
--- ====================================================================
-
---- Initialize all refactored systems in the correct order
-function IntegrationManager.Initialize()
-    integrationStatus.startTime = GetGameTimer()
-    
-    print("[CNR_INTEGRATION] Starting system initialization...")
-    
-    -- Initialize core systems first
-    local initOrder = {
-        {name = "Constants", module = Constants, required = true},
-        {name = "Validation", module = Validation, required = true},
-        {name = "DataManager", module = DataManager, required = true},
-        {name = "SecureInventory", module = SecureInventory, required = true},
-        {name = "SecureTransactions", module = SecureTransactions, required = true},
-        {name = "PlayerManager", module = PlayerManager, required = true},
-        {name = "PerformanceOptimizer", module = PerformanceOptimizer, required = false}
-    }
-    
-    for _, system in ipairs(initOrder) do
-        local success = IntegrationManager.InitializeSystem(system.name, system.module, system.required)
-        integrationStatus.modulesLoaded[system.name] = success
-        
-        if system.required and not success then
-            error(string.format("Failed to initialize required system: %s", system.name))
-        end
-    end
-    
-    -- Set up legacy compatibility
-    IntegrationManager.SetupLegacyCompatibility()
-    
-    -- Perform data migration if needed
-    IntegrationManager.PerformDataMigration()
-    
-    -- Start monitoring systems
-    IntegrationManager.StartMonitoring()
-    
-    integrationStatus.initialized = true
-    local initTime = GetGameTimer() - integrationStatus.startTime
-    
-    print(string.format("[CNR_INTEGRATION] System initialization completed in %dms", initTime))
-    
-    -- Log initialization status
-    IntegrationManager.LogInitializationStatus()
-end
-
---- Initialize a specific system with error handling
---- @param systemName string Name of the system
---- @param systemModule table System module
---- @param required boolean Whether the system is required
---- @return boolean Success status
-function IntegrationManager.InitializeSystem(systemName, systemModule, required)
-    print(string.format("[CNR_INTEGRATION] Initializing %s...", systemName))
-    
-    local success, error = pcall(function()
-        if systemModule and systemModule.Initialize then
-            systemModule.Initialize()
-        end
-    end)
-    
-    if success then
-        print(string.format("[CNR_INTEGRATION] ✅ %s initialized successfully", systemName))
-        return true
-    else
-        local logLevel = required and "error" or "warn"
-        print(string.format("[CNR_INTEGRATION] ❌ Failed to initialize %s: %s", systemName, tostring(error)))
-        return false
-    end
-end
-
--- ====================================================================
--- LEGACY COMPATIBILITY LAYER
--- ====================================================================
-
---- Set up compatibility functions for existing code
-function IntegrationManager.SetupLegacyCompatibility()
-    print("[CNR_INTEGRATION] Setting up legacy compatibility layer...")
-    
-    -- Store original functions if they exist
-    legacyFunctions.AddItemToPlayerInventory = AddItemToPlayerInventory
-    legacyFunctions.RemoveItemFromPlayerInventory = RemoveItemFromPlayerInventory
-    legacyFunctions.AddPlayerMoney = AddPlayerMoney
-    legacyFunctions.RemovePlayerMoney = RemovePlayerMoney
-    
-    -- Replace with secure versions
-    AddItemToPlayerInventory = function(playerId, itemId, quantity, itemDetails)
-        local success, message = SecureInventory.AddItem(playerId, itemId, quantity, "legacy_add")
-        return success, message
-    end
-    
-    RemoveItemFromPlayerInventory = function(playerId, itemId, quantity)
-        local success, message = SecureInventory.RemoveItem(playerId, itemId, quantity, "legacy_remove")
-        return success, message
-    end
-    
-    AddPlayerMoney = function(playerId, amount)
-        local success, message = SecureTransactions.AddMoney(playerId, amount, "legacy_add")
-        return success
-    end
-    
-    RemovePlayerMoney = function(playerId, amount)
-        local success, message = SecureTransactions.RemoveMoney(playerId, amount, "legacy_remove")
-        return success
-    end
-    
-    -- Enhanced MarkPlayerForInventorySave compatibility
-    MarkPlayerForInventorySave = function(playerId)
-        DataManager.MarkPlayerForSave(playerId)
-    end
-    
-    print("[CNR_INTEGRATION] ✅ Legacy compatibility layer established")
-end
-
--- ====================================================================
--- DATA MIGRATION SYSTEM
--- ====================================================================
-
---- Perform data migration from old format to new format
-function IntegrationManager.PerformDataMigration()
-    print("[CNR_INTEGRATION] Starting data migration...")
-    
-    -- Check if migration is needed
-    local migrationNeeded = IntegrationManager.CheckMigrationNeeded()
-    
-    if not migrationNeeded then
-        print("[CNR_INTEGRATION] No data migration needed")
-        integrationStatus.migrationComplete = true
-        return
-    end
-    
-    -- Perform migration
-    local success, error = pcall(function()
-        IntegrationManager.MigratePlayerData()
-        IntegrationManager.MigrateSystemData()
-    end)
-    
-    if success then
-        print("[CNR_INTEGRATION] ✅ Data migration completed successfully")
-        integrationStatus.migrationComplete = true
-    else
-        print(string.format("[CNR_INTEGRATION] ❌ Data migration failed: %s", tostring(error)))
-    end
-end
-
---- Check if data migration is needed
---- @return boolean Whether migration is needed
-function IntegrationManager.CheckMigrationNeeded()
-    -- Check for old format files
-    local oldFormatFiles = {
-        "bans.json",
-        "purchase_history.json"
-    }
-    
-    for _, filename in ipairs(oldFormatFiles) do
-        local fileData = LoadResourceFile(GetCurrentResourceName(), filename)
-        if fileData then
-            local success, data = pcall(json.decode, fileData)
-            if success and data and not data.version then
-                return true -- Old format detected
-            end
-        end
-    end
-    
-    return false
-end
-
---- Migrate player data files
-function IntegrationManager.MigratePlayerData()
-    print("[CNR_INTEGRATION] Migrating player data...")
-    
-    -- This would scan the player_data directory and migrate files
-    -- For now, we'll rely on PlayerManager's built-in migration
-    print("[CNR_INTEGRATION] Player data migration handled by PlayerManager")
-end
-
---- Migrate system data files
-function IntegrationManager.MigrateSystemData()
-    print("[CNR_INTEGRATION] Migrating system data...")
-    
-    -- Migrate bans.json
-    local success, bansData = DataManager.LoadSystemData("bans")
-    if success and bansData then
-        if not bansData.version then
-            bansData.version = "1.2.0"
-            bansData.migrated = os.time()
-            DataManager.SaveSystemData("bans", bansData)
-            print("[CNR_INTEGRATION] Migrated bans.json")
-        end
-    end
-    
-    -- Migrate purchase_history.json
-    local success, purchaseData = DataManager.LoadSystemData("purchases")
-    if success and purchaseData then
-        if not purchaseData.version then
-            purchaseData.version = "1.2.0"
-            purchaseData.migrated = os.time()
-            DataManager.SaveSystemData("purchases", purchaseData)
-            print("[CNR_INTEGRATION] Migrated purchase_history.json")
-        end
-    end
-end
-
--- ====================================================================
--- MONITORING AND HEALTH CHECKS
--- ====================================================================
-
---- Start monitoring systems
-function IntegrationManager.StartMonitoring()
-    print("[CNR_INTEGRATION] Starting system monitoring...")
-    
-    -- Create monitoring loop using PerformanceOptimizer
-    if PerformanceOptimizer then
-        PerformanceOptimizer.CreateOptimizedLoop(function()
-            IntegrationManager.PerformHealthCheck()
-        end, 60000, 120000, 3) -- 1 minute base interval, medium priority
-        
-        PerformanceOptimizer.CreateOptimizedLoop(function()
-            IntegrationManager.LogSystemStats()
-        end, 300000, 600000, 5) -- 5 minute base interval, low priority
-    end
-end
-
---- Perform health check on all systems
-function IntegrationManager.PerformHealthCheck()
-    local issues = {}
-    
-    -- Check each system
-    for systemName, loaded in pairs(integrationStatus.modulesLoaded) do
-        if not loaded then
-            table.insert(issues, string.format("%s not loaded", systemName))
-        end
-    end
-    
-    -- Check data integrity
-    if DataManager then
-        local stats = DataManager.GetStats()
-        if stats.failedSaves > 0 then
-            table.insert(issues, string.format("DataManager has %d failed saves", stats.failedSaves))
-        end
-    end
-    
-    -- Check performance
-    if PerformanceOptimizer then
-        local metrics = PerformanceOptimizer.GetMetrics()
-        if metrics.memoryUsage > Constants.PERFORMANCE.MEMORY_WARNING_THRESHOLD_MB * 1024 then
-            table.insert(issues, string.format("High memory usage: %.1fMB", metrics.memoryUsage / 1024))
-        end
-    end
-    
-    -- Log issues if any
-    if #issues > 0 then
-        print(string.format("[CNR_INTEGRATION] Health check found %d issues:", #issues))
-        for _, issue in ipairs(issues) do
-            print(string.format("[CNR_INTEGRATION] - %s", issue))
-        end
-    end
-end
-
---- Log comprehensive system statistics
-function IntegrationManager.LogSystemStats()
-    print("[CNR_INTEGRATION] === SYSTEM STATISTICS ===")
-    
-    -- Integration status
-    print(string.format("[CNR_INTEGRATION] Initialized: %s, Migration: %s", 
-        tostring(integrationStatus.initialized), 
-        tostring(integrationStatus.migrationComplete)))
-    
-    -- Module status
-    for systemName, loaded in pairs(integrationStatus.modulesLoaded) do
-        print(string.format("[CNR_INTEGRATION] %s: %s", systemName, loaded and "✅" or "❌"))
-    end
-    
-    -- System-specific stats
-    if DataManager then DataManager.LogStats() end
-    if SecureInventory then SecureInventory.LogStats() end
-    if SecureTransactions then SecureTransactions.LogStats() end
-    if PlayerManager then PlayerManager.LogStats() end
-    if PerformanceOptimizer then PerformanceOptimizer.LogStats() end
-    
-    print("[CNR_INTEGRATION] === END STATISTICS ===")
-end
-
---- Log initialization status
-function IntegrationManager.LogInitializationStatus()
-    print("[CNR_INTEGRATION] === INITIALIZATION SUMMARY ===")
-    
-    local totalSystems = 0
-    local loadedSystems = 0
-    
-    for systemName, loaded in pairs(integrationStatus.modulesLoaded) do
-        totalSystems = totalSystems + 1
-        if loaded then loadedSystems = loadedSystems + 1 end
-        
-        print(string.format("[CNR_INTEGRATION] %s: %s", 
-            systemName, loaded and "✅ LOADED" or "❌ FAILED"))
-    end
-    
-    print(string.format("[CNR_INTEGRATION] Systems: %d/%d loaded", loadedSystems, totalSystems))
-    print(string.format("[CNR_INTEGRATION] Migration: %s", 
-        integrationStatus.migrationComplete and "✅ COMPLETE" or "❌ PENDING"))
-    print(string.format("[CNR_INTEGRATION] Status: %s", 
-        integrationStatus.initialized and "✅ READY" or "❌ NOT READY"))
-    
-    print("[CNR_INTEGRATION] === END SUMMARY ===")
-end
-
--- ====================================================================
--- UTILITY FUNCTIONS
--- ====================================================================
-
---- Get integration status
---- @return table Integration status information
-function IntegrationManager.GetStatus()
-    return {
-        initialized = integrationStatus.initialized,
-        migrationComplete = integrationStatus.migrationComplete,
-        modulesLoaded = integrationStatus.modulesLoaded,
-        uptime = GetGameTimer() - integrationStatus.startTime
-    }
-end
-
---- Check if all systems are ready
---- @return boolean Whether all systems are ready
-function IntegrationManager.IsReady()
-    if not integrationStatus.initialized then return false end
-    if not integrationStatus.migrationComplete then return false end
-    
-    for _, loaded in pairs(integrationStatus.modulesLoaded) do
-        if not loaded then return false end
-    end
-    
-    return true
-end
-
--- ====================================================================
--- CLEANUP AND SHUTDOWN
--- ====================================================================
-
---- Cleanup all systems on resource stop
-function IntegrationManager.Cleanup()
-    print("[CNR_INTEGRATION] Starting system cleanup...")
-    
-    -- Cleanup systems in reverse order
-    local cleanupOrder = {
-        "PerformanceOptimizer", "PlayerManager", "SecureTransactions",
-        "SecureInventory", "DataManager", "Validation"
-    }
-    
-    for _, systemName in ipairs(cleanupOrder) do
-        local system = _G[systemName]
-        if system and system.Cleanup then
-            local success, error = pcall(system.Cleanup)
-            if success then
-                print(string.format("[CNR_INTEGRATION] ✅ %s cleaned up", systemName))
-            else
-                print(string.format("[CNR_INTEGRATION] ❌ %s cleanup failed: %s", systemName, tostring(error)))
-            end
-        end
-    end
-    
-    print("[CNR_INTEGRATION] System cleanup completed")
-end
-
--- ====================================================================
--- RESOURCE EVENT HANDLERS
--- ====================================================================
-
---- Handle resource start
-AddEventHandler('onResourceStart', function(resourceName)
-    if GetCurrentResourceName() == resourceName then
-        -- Small delay to ensure all scripts are loaded
-        Citizen.SetTimeout(1000, function()
-            IntegrationManager.Initialize()
-        end)
-    end
-end)
-
---- Handle resource stop
-AddEventHandler('onResourceStop', function(resourceName)
-    if GetCurrentResourceName() == resourceName then
-        IntegrationManager.Cleanup()
-    end
-end)
-
->>>>>>> Stashed changes
-
--- Ensure Constants are loaded
-if not Constants then
-    error("Constants must be loaded before validation.lua")
-end
-
--- Initialize Validation module
-Validation = Validation or {}
-
--- Rate limiting storage
-local rateLimits = {}
-local playerEventCounts = {}
-
--- ====================================================================
--- VALIDATION UTILITY FUNCTIONS
--- ====================================================================
-
---- Safely convert value to number with bounds checking
---- @param value any The value to convert
---- @param min number Minimum allowed value
---- @param max number Maximum allowed value
---- @param default number Default value if conversion fails
---- @return number The validated number
-local function SafeToNumber(value, min, max, default)
-    local num = tonumber(value)
-    if not num then return default end
-    if min and num < min then return min end
-    if max and num > max then return max end
-    return num
-end
-
---- Check if a string is valid and within length limits
---- @param str string The string to validate
---- @param maxLength number Maximum allowed length
---- @param allowEmpty boolean Whether empty strings are allowed
---- @return boolean, string Success status and error message
-local function ValidateString(str, maxLength, allowEmpty)
-    if not str then
-        return false, "String is nil"
-    end
-    
-    if type(str) ~= "string" then
-        return false, "Value is not a string"
-    end
-    
-    if not allowEmpty and #str == 0 then
-        return false, "String cannot be empty"
-    end
-    
-    if maxLength and #str > maxLength then
-        return false, string.format("String too long (max: %d, got: %d)", maxLength, #str)
-    end
-    
-    return true, nil
-end
-
---- Log validation errors with context
---- @param playerId number Player ID for context
---- @param operation string The operation being validated
---- @param error string The validation error
-local function LogValidationError(playerId, operation, error)
-    local playerName = GetPlayerName(playerId) or "Unknown"
-    print(string.format("[CNR_VALIDATION_ERROR] Player %s (%d) - %s: %s", 
-        playerName, playerId, operation, error))
-end
-
--- ====================================================================
--- RATE LIMITING SYSTEM
--- ====================================================================
-
---- Initialize rate limiting for a player
---- @param playerId number Player ID
-local function InitializeRateLimit(playerId)
-    if not rateLimits[playerId] then
-        rateLimits[playerId] = {
-            events = {},
-            purchases = {},
-            inventoryOps = {}
-        }
-    end
-end
-
---- Check if player is rate limited for a specific action
---- @param playerId number Player ID
---- @param actionType string Type of action (events, purchases, inventoryOps)
---- @param maxCount number Maximum allowed actions
---- @param timeWindow number Time window in milliseconds
---- @return boolean Whether the action is allowed
-function Validation.CheckRateLimit(playerId, actionType, maxCount, timeWindow)
-    InitializeRateLimit(playerId)
-    
-    local currentTime = GetGameTimer()
-    local playerLimits = rateLimits[playerId][actionType]
-    
-    -- Clean old entries
-    for i = #playerLimits, 1, -1 do
-        if currentTime - playerLimits[i] > timeWindow then
-            table.remove(playerLimits, i)
-        end
-    end
-    
-    -- Check if limit exceeded
-    if #playerLimits >= maxCount then
-        LogValidationError(playerId, "RateLimit", 
-            string.format("Exceeded %s limit: %d/%d in %dms", actionType, #playerLimits, maxCount, timeWindow))
-        return false
-    end
-    
-    -- Add current action
-    table.insert(playerLimits, currentTime)
-    return true
-end
-
---- Clean up rate limiting data for disconnected player
---- @param playerId number Player ID
-function Validation.CleanupRateLimit(playerId)
-    rateLimits[playerId] = nil
-    playerEventCounts[playerId] = nil
-end
-
--- ====================================================================
--- PLAYER VALIDATION
--- ====================================================================
-
---- Validate player exists and is connected
---- @param playerId number Player ID to validate
---- @return boolean, string Success status and error message
-function Validation.ValidatePlayer(playerId)
-    if not playerId or type(playerId) ~= "number" then
-        return false, "Invalid player ID type"
-    end
-    
-    if playerId <= 0 then
-        return false, "Invalid player ID value"
-    end
-    
-    local playerName = GetPlayerName(playerId)
-    if not playerName then
-        return false, "Player not found or disconnected"
-    end
-    
-    return true, nil
-end
-
---- Validate player has required role
---- @param playerId number Player ID
---- @param requiredRole string Required role
---- @param playerData table Player data (optional, will fetch if not provided)
---- @return boolean, string Success status and error message
-function Validation.ValidatePlayerRole(playerId, requiredRole, playerData)
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then return false, error end
-    
-    if not playerData then
-        playerData = GetCnrPlayerData(playerId)
-    end
-    
-    if not playerData then
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    if playerData.role ~= requiredRole then
-        return false, string.format("Role '%s' required, player has '%s'", requiredRole, playerData.role or "none")
-    end
-    
-    return true, nil
-end
-
---- Validate player has required level
---- @param playerId number Player ID
---- @param requiredLevel number Required level
---- @param playerData table Player data (optional)
---- @return boolean, string Success status and error message
-function Validation.ValidatePlayerLevel(playerId, requiredLevel, playerData)
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then return false, error end
-    
-    if not playerData then
-        playerData = GetCnrPlayerData(playerId)
-    end
-    
-    if not playerData then
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    local playerLevel = playerData.level or 1
-    if playerLevel < requiredLevel then
-        return false, string.format("Level %d required, player is level %d", requiredLevel, playerLevel)
-    end
-    
-    return true, nil
-end
-
--- ====================================================================
--- ITEM VALIDATION
--- ====================================================================
-
---- Validate item exists in configuration
---- @param itemId string Item ID to validate
---- @return boolean, table, string Success status, item config, and error message
-function Validation.ValidateItem(itemId)
-    local valid, error = ValidateString(itemId, Constants.VALIDATION.MAX_STRING_LENGTH, false)
-    if not valid then
-        return false, nil, "Invalid item ID: " .. error
-    end
-    
-    if not Config or not Config.Items then
-        return false, nil, "Item configuration not loaded"
-    end
-    
-    local itemConfig = nil
-    for _, item in ipairs(Config.Items) do
-        if item.itemId == itemId then
-            itemConfig = item
-            break
-        end
-    end
-    
-    if not itemConfig then
-        return false, nil, Constants.ERROR_MESSAGES.ITEM_NOT_FOUND
-    end
-    
-    return true, itemConfig, nil
-end
-
---- Validate item quantity
---- @param quantity any Quantity to validate
---- @return boolean, number, string Success status, validated quantity, and error message
-function Validation.ValidateQuantity(quantity)
-    local num = SafeToNumber(quantity, 
-        Constants.VALIDATION.MIN_ITEM_QUANTITY, 
-        Constants.VALIDATION.MAX_ITEM_QUANTITY, 
-        nil)
-    
-    if not num then
-        return false, 0, Constants.ERROR_MESSAGES.INVALID_QUANTITY
-    end
-    
-    return true, num, nil
-end
-
---- Validate player can afford item purchase
---- @param playerId number Player ID
---- @param itemConfig table Item configuration
---- @param quantity number Quantity to purchase
---- @param playerData table Player data (optional)
---- @return boolean, number, string Success status, total cost, and error message
-function Validation.ValidateItemPurchase(playerId, itemConfig, quantity, playerData)
-    if not playerData then
-        playerData = GetCnrPlayerData(playerId)
-    end
-    
-    if not playerData then
-        return false, 0, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    local totalCost = (itemConfig.basePrice or 0) * quantity
-    
-    -- Validate cost is reasonable
-    if totalCost > Constants.VALIDATION.MAX_MONEY_TRANSACTION then
-        return false, totalCost, "Transaction amount too large"
-    end
-    
-    -- Check player funds
-    local playerMoney = playerData.money or 0
-    if playerMoney < totalCost then
-        return false, totalCost, Constants.ERROR_MESSAGES.INSUFFICIENT_FUNDS
-    end
-    
-    -- Check role restrictions
-    if itemConfig.forCop and playerData.role ~= Constants.ROLES.COP then
-        return false, totalCost, "Item restricted to police officers"
-    end
-    
-    -- Check level requirements
-    local requiredLevel = nil
-    if playerData.role == Constants.ROLES.COP and itemConfig.minLevelCop then
-        requiredLevel = itemConfig.minLevelCop
-    elseif playerData.role == Constants.ROLES.ROBBER and itemConfig.minLevelRobber then
-        requiredLevel = itemConfig.minLevelRobber
-    end
-    
-    if requiredLevel then
-        local playerLevel = playerData.level or 1
-        if playerLevel < requiredLevel then
-            return false, totalCost, string.format("Level %d required for this item", requiredLevel)
-        end
-    end
-    
-    return true, totalCost, nil
-end
-
---- Validate player has item for sale
---- @param playerId number Player ID
---- @param itemId string Item ID
---- @param quantity number Quantity to sell
---- @param playerData table Player data (optional)
---- @return boolean, string Success status and error message
-function Validation.ValidateItemSale(playerId, itemId, quantity, playerData)
-    if not playerData then
-        playerData = GetCnrPlayerData(playerId)
-    end
-    
-    if not playerData or not playerData.inventory then
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    local playerItem = playerData.inventory[itemId]
-    if not playerItem or not playerItem.count then
-        return false, Constants.ERROR_MESSAGES.INSUFFICIENT_ITEMS
-    end
-    
-    if playerItem.count < quantity then
-        return false, string.format("Insufficient items: have %d, need %d", playerItem.count, quantity)
-    end
-    
-    return true, nil
-end
-
--- ====================================================================
--- MONEY VALIDATION
--- ====================================================================
-
---- Validate money transaction
---- @param amount any Amount to validate
---- @param allowNegative boolean Whether negative amounts are allowed
---- @return boolean, number, string Success status, validated amount, and error message
-function Validation.ValidateMoney(amount, allowNegative)
-    local minAmount = allowNegative and -Constants.VALIDATION.MAX_MONEY_TRANSACTION or Constants.VALIDATION.MIN_MONEY_TRANSACTION
-    local num = SafeToNumber(amount, minAmount, Constants.VALIDATION.MAX_MONEY_TRANSACTION, nil)
-    
-    if not num then
-        return false, 0, "Invalid money amount"
-    end
-    
-    return true, num, nil
-end
-
---- Validate player has sufficient funds
---- @param playerId number Player ID
---- @param amount number Amount needed
---- @param playerData table Player data (optional)
---- @return boolean, string Success status and error message
-function Validation.ValidatePlayerFunds(playerId, amount, playerData)
-    if not playerData then
-        playerData = GetCnrPlayerData(playerId)
-    end
-    
-    if not playerData then
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    local playerMoney = playerData.money or 0
-    if playerMoney < amount then
-        return false, string.format("Insufficient funds: have $%d, need $%d", playerMoney, amount)
-    end
-    
-    return true, nil
-end
-
--- ====================================================================
--- INVENTORY VALIDATION
--- ====================================================================
-
---- Validate inventory operation
---- @param playerId number Player ID
---- @param operation string Operation type
---- @return boolean, string Success status and error message
-function Validation.ValidateInventoryOperation(playerId, operation)
-    -- Rate limit inventory operations
-    if not Validation.CheckRateLimit(playerId, "inventoryOps", 
-        Constants.VALIDATION.MAX_INVENTORY_OPERATIONS_PER_SECOND, 
-        Constants.TIME_MS.SECOND) then
-        return false, Constants.ERROR_MESSAGES.RATE_LIMITED
-    end
-    
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then return false, error end
-    
-    local validOperations = {"equip", "unequip", "use", "drop", "add", "remove"}
-    local isValidOperation = false
-    for _, validOp in ipairs(validOperations) do
-        if operation == validOp then
-            isValidOperation = true
-            break
-        end
-    end
-    
-    if not isValidOperation then
-        return false, "Invalid inventory operation: " .. tostring(operation)
-    end
-    
-    return true, nil
-end
-
---- Validate inventory has space for items
---- @param playerData table Player data
---- @param quantity number Quantity to add
---- @return boolean, string Success status and error message
-function Validation.ValidateInventorySpace(playerData, quantity)
-    if not playerData or not playerData.inventory then
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    -- Calculate current inventory count
-    local currentCount = 0
-    for _, item in pairs(playerData.inventory) do
-        currentCount = currentCount + (item.count or 0)
-    end
-    
-    if (currentCount + quantity) > Constants.PLAYER_LIMITS.MAX_INVENTORY_SLOTS then
-        return false, Constants.ERROR_MESSAGES.INVENTORY_FULL
-    end
-    
-    return true, nil
-end
-
--- ====================================================================
--- ADMIN VALIDATION
--- ====================================================================
-
---- Validate player has admin permissions
---- @param playerId number Player ID
---- @param requiredLevel number Required admin level (optional)
---- @return boolean, string Success status and error message
-function Validation.ValidateAdminPermission(playerId, requiredLevel)
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then return false, error end
-    
-    -- Use existing IsPlayerAdmin function
-    if not IsPlayerAdmin(playerId) then
-        return false, Constants.ERROR_MESSAGES.PERMISSION_DENIED
-    end
-    
-    -- TODO: Implement admin levels if needed
-    -- For now, just check if player is admin
-    
-    return true, nil
-end
-
--- ====================================================================
--- EVENT VALIDATION
--- ====================================================================
-
---- Validate network event parameters
---- @param playerId number Player ID
---- @param eventName string Event name
---- @param params table Event parameters
---- @return boolean, string Success status and error message
-function Validation.ValidateNetworkEvent(playerId, eventName, params)
-    -- Rate limit general events
-    if not Validation.CheckRateLimit(playerId, "events", 
-        Constants.VALIDATION.MAX_EVENTS_PER_SECOND, 
-        Constants.TIME_MS.SECOND) then
-        return false, Constants.ERROR_MESSAGES.RATE_LIMITED
-    end
-    
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then return false, error end
-    
-    local validError = ValidateString(eventName, Constants.VALIDATION.MAX_STRING_LENGTH, false)
-    if not validError then
-        return false, "Invalid event name"
-    end
-    
-    if params and type(params) ~= "table" then
-        return false, "Event parameters must be a table"
-    end
-    
-    return true, nil
-end
-
--- ====================================================================
--- VALIDATION CLEANUP FUNCTIONS
--- ====================================================================
-
---- Clean up validation data for disconnected player
---- @param playerId number Player ID
-function Validation.CleanupPlayer(playerId)
-    Validation.CleanupRateLimit(playerId)
-end
-
---- Periodic cleanup of old rate limiting data
-function Validation.PeriodicCleanup()
-    local currentTime = GetGameTimer()
-    local cleanupThreshold = 5 * Constants.TIME_MS.MINUTE -- 5 minutes
-    
-    for playerId, limits in pairs(rateLimits) do
-        -- Check if player is still connected
-        if not GetPlayerName(playerId) then
-            rateLimits[playerId] = nil
-        else
-            -- Clean old entries for connected players
-            for actionType, actions in pairs(limits) do
-                for i = #actions, 1, -1 do
-                    if currentTime - actions[i] > cleanupThreshold then
-                        table.remove(actions, i)
-                    end
-                end
-            end
-        end
-    end
-end
-
--- Start periodic cleanup thread
-Citizen.CreateThread(function()
-    while true do
-        Citizen.Wait(Constants.TIME_MS.MINUTE) -- Run every minute
-        Validation.PeriodicCleanup()
-    end
-end)
-
--- ====================================================================
--- DATA MANAGER SYSTEM (from data_manager.lua)
--- ====================================================================
-
--- Initialize DataManager module
-DataManager = DataManager or {}
-
--- Internal state
-local pendingSaves = {}
-local saveQueue = {}
-local isProcessingSaves = false
-local lastSaveTime = 0
-local backupSchedule = {}
-
--- Performance monitoring
-local saveStats = {
-    totalSaves = 0,
-    failedSaves = 0,
-    averageSaveTime = 0,
-    lastSaveTime = 0
-}
-
--- ====================================================================
--- DATA MANAGER UTILITY FUNCTIONS
--- ====================================================================
-
---- Generate a unique filename for player data
---- @param playerId number Player ID
---- @return string Filename
-local function GetPlayerDataFilename(playerId)
-    return string.format("%s/player_%d%s", Constants.FILES.PLAYER_DATA_DIR, playerId, Constants.FILES.JSON_EXT)
-end
-
---- Generate backup filename with timestamp
---- @param originalFilename string Original filename
---- @return string Backup filename
-local function GetBackupFilename(originalFilename)
-    local timestamp = os.date("%Y%m%d_%H%M%S")
-    local baseName = originalFilename:gsub(Constants.FILES.JSON_EXT .. "$", "")
-    return string.format("%s/%s_%s%s", Constants.FILES.BACKUP_DIR, baseName, timestamp, Constants.FILES.BACKUP_EXT)
-end
-
---- Log data manager operations
---- @param message string Log message
---- @param level string Log level
-local function LogDataManager(message, level)
-    level = level or Constants.LOG_LEVELS.INFO
-    if level == Constants.LOG_LEVELS.ERROR or level == Constants.LOG_LEVELS.WARN then
-        print(string.format("[CNR_DATA_MANAGER] [%s] %s", string.upper(level), message))
-    end
-end
-
---- Validate JSON data before saving
---- @param data table Data to validate
---- @return boolean, string Success status and error message
-local function ValidateJsonData(data)
-    if not data or type(data) ~= "table" then
-        return false, "Data must be a table"
-    end
-    
-    -- Check for circular references (basic check)
-    local function checkCircular(tbl, seen)
-        seen = seen or {}
-        if seen[tbl] then
-            return false
-        end
-        seen[tbl] = true
-        
-        for k, v in pairs(tbl) do
-            if type(v) == "table" then
-                if not checkCircular(v, seen) then
-                    return false
-                end
-            end
-        end
-        
-        seen[tbl] = nil
-        return true
-    end
-    
-    if not checkCircular(data) then
-        return false, "Circular reference detected in data"
-    end
-    
-    return true, nil
-end
-
---- Safely encode JSON with error handling
---- @param data table Data to encode
---- @return boolean, string Success status and JSON string or error message
-local function SafeJsonEncode(data)
-    local valid, error = ValidateJsonData(data)
-    if not valid then
-        return false, error
-    end
-    
-    local success, result = pcall(json.encode, data)
-    if not success then
-        return false, "JSON encoding failed: " .. tostring(result)
-    end
-    
-    return true, result
-end
-
---- Safely decode JSON with error handling
---- @param jsonString string JSON string to decode
---- @return boolean, table Success status and decoded data or error message
-local function SafeJsonDecode(jsonString)
-    if not jsonString or type(jsonString) ~= "string" or #jsonString == 0 then
-        return false, "Invalid JSON string"
-    end
-    
-    local success, result = pcall(json.decode, jsonString)
-    if not success then
-        return false, "JSON decoding failed: " .. tostring(result)
-    end
-    
-    if type(result) ~= "table" then
-        return false, "Decoded JSON is not a table"
-    end
-    
-    return true, result
-end
-
--- ====================================================================
--- BACKUP SYSTEM
--- ====================================================================
-
---- Create backup of a file
---- @param filename string Original filename
---- @return boolean Success status
-local function CreateBackup(filename)
-    local fileData = LoadResourceFile(GetCurrentResourceName(), filename)
-    if not fileData then
-        return false -- File doesn't exist, no backup needed
-    end
-    
-    local backupFilename = GetBackupFilename(filename)
-    local success = SaveResourceFile(GetCurrentResourceName(), backupFilename, fileData, -1)
-    
-    if success then
-        LogDataManager(string.format("Created backup: %s -> %s", filename, backupFilename))
-        
-        -- Clean old backups
-        CleanOldBackups(filename)
-    else
-        LogDataManager(string.format("Failed to create backup for %s", filename), Constants.LOG_LEVELS.ERROR)
-    end
-    
-    return success
-end
-
---- Clean old backup files to prevent disk space issues
---- @param originalFilename string Original filename
-function CleanOldBackups(originalFilename)
-    -- This is a simplified version - in a real implementation,
-    -- you would scan the backup directory and remove old files
-    -- For now, we'll just log the intent
-    LogDataManager(string.format("Cleaning old backups for %s", originalFilename))
-end
-
---- Schedule automatic backups
---- @param filename string Filename to backup
---- @param intervalHours number Backup interval in hours
-function DataManager.ScheduleBackup(filename, intervalHours)
-    intervalHours = intervalHours or Constants.FILES.BACKUP_INTERVAL_HOURS
-    
-    backupSchedule[filename] = {
-        interval = intervalHours * Constants.TIME_MS.HOUR,
-        lastBackup = 0
-    }
-end
-
---- Process scheduled backups
-local function ProcessScheduledBackups()
-    local currentTime = GetGameTimer()
-    
-    for filename, schedule in pairs(backupSchedule) do
-        if currentTime - schedule.lastBackup >= schedule.interval then
-            if CreateBackup(filename) then
-                schedule.lastBackup = currentTime
-            end
-        end
-    end
-end
-
--- ====================================================================
--- CORE SAVE/LOAD FUNCTIONS
--- ====================================================================
-
---- Save data to file with error handling and backup
---- @param filename string Filename to save to
---- @param data table Data to save
---- @param createBackup boolean Whether to create backup before saving
---- @return boolean, string Success status and error message
-function DataManager.SaveToFile(filename, data, createBackup)
-    local startTime = GetGameTimer()
-    
-    -- Validate input
-    if not filename or type(filename) ~= "string" then
-        return false, "Invalid filename"
-    end
-    
-    local valid, jsonData = SafeJsonEncode(data)
-    if not valid then
-        LogDataManager(string.format("Failed to encode data for %s: %s", filename, jsonData), Constants.LOG_LEVELS.ERROR)
-        return false, jsonData
-    end
-    
-    -- Create backup if requested
-    if createBackup then
-        CreateBackup(filename)
-    end
-    
-    -- Save the file
-    local success = SaveResourceFile(GetCurrentResourceName(), filename, jsonData, -1)
-    
-    -- Update statistics
-    local saveTime = GetGameTimer() - startTime
-    saveStats.totalSaves = saveStats.totalSaves + 1
-    saveStats.lastSaveTime = saveTime
-    saveStats.averageSaveTime = (saveStats.averageSaveTime + saveTime) / 2
-    
-    if success then
-        LogDataManager(string.format("Saved %s (took %dms)", filename, saveTime))
-        return true, nil
-    else
-        saveStats.failedSaves = saveStats.failedSaves + 1
-        LogDataManager(string.format("Failed to save %s", filename), Constants.LOG_LEVELS.ERROR)
-        return false, "File save operation failed"
-    end
-end
-
---- Load data from file with error handling
---- @param filename string Filename to load from
---- @return boolean, table Success status and loaded data or error message
-function DataManager.LoadFromFile(filename)
-    if not filename or type(filename) ~= "string" then
-        return false, "Invalid filename"
-    end
-    
-    local fileData = LoadResourceFile(GetCurrentResourceName(), filename)
-    if not fileData then
-        return false, "File not found or empty"
-    end
-    
-    local valid, data = SafeJsonDecode(fileData)
-    if not valid then
-        LogDataManager(string.format("Failed to decode %s: %s", filename, data), Constants.LOG_LEVELS.ERROR)
-        return false, data
-    end
-    
-    LogDataManager(string.format("Loaded %s", filename))
-    return true, data
-end
-
--- ====================================================================
--- BATCHED SAVE SYSTEM
--- ====================================================================
-
---- Add data to save queue for batched processing
---- @param filename string Filename to save to
---- @param data table Data to save
---- @param priority number Priority (higher = processed first)
-function DataManager.QueueSave(filename, data, priority)
-    priority = priority or 1
-    
-    -- Remove existing entry for same file to prevent duplicates
-    for i = #saveQueue, 1, -1 do
-        if saveQueue[i].filename == filename then
-            table.remove(saveQueue, i)
-        end
-    end
-    
-    -- Add to queue
-    table.insert(saveQueue, {
-        filename = filename,
-        data = data,
-        priority = priority,
-        timestamp = GetGameTimer()
-    })
-    
-    -- Sort by priority (higher first)
-    table.sort(saveQueue, function(a, b) return a.priority > b.priority end)
-    
-    LogDataManager(string.format("Queued save for %s (priority: %d, queue size: %d)", filename, priority, #saveQueue))
-end
-
---- Process the save queue
-local function ProcessSaveQueue()
-    if isProcessingSaves or #saveQueue == 0 then
-        return
-    end
-    
-    isProcessingSaves = true
-    local processed = 0
-    local maxProcessPerCycle = Constants.DATABASE.BATCH_SIZE
-    
-    while #saveQueue > 0 and processed < maxProcessPerCycle do
-        local saveItem = table.remove(saveQueue, 1)
-        local success, error = DataManager.SaveToFile(saveItem.filename, saveItem.data, true)
-        
-        if not success then
-            LogDataManager(string.format("Failed to save queued file %s: %s", saveItem.filename, error), Constants.LOG_LEVELS.ERROR)
-        end
-        
-        processed = processed + 1
-    end
-    
-    isProcessingSaves = false
-    lastSaveTime = GetGameTimer()
-    
-    if processed > 0 then
-        LogDataManager(string.format("Processed %d saves from queue (%d remaining)", processed, #saveQueue))
-    end
-end
-
--- ====================================================================
--- PLAYER DATA MANAGEMENT
--- ====================================================================
-
---- Save player data with validation and queuing
---- @param playerId number Player ID
---- @param playerData table Player data to save
---- @param immediate boolean Whether to save immediately or queue
---- @return boolean, string Success status and error message
-function DataManager.SavePlayerData(playerId, playerData, immediate)
-    -- Validate player ID
-    if not playerId or type(playerId) ~= "number" or playerId <= 0 then
-        return false, "Invalid player ID"
-    end
-    
-    -- Validate player data
-    if not playerData or type(playerData) ~= "table" then
-        return false, "Invalid player data"
-    end
-    
-    -- Add metadata
-    local dataToSave = {
-        playerId = playerId,
-        lastSaved = os.time(),
-        version = "1.2.0",
-        data = playerData
-    }
-    
-    local filename = GetPlayerDataFilename(playerId)
-    
-    if immediate then
-        return DataManager.SaveToFile(filename, dataToSave, true)
-    else
-        DataManager.QueueSave(filename, dataToSave, 2) -- Higher priority for player data
-        return true, nil
-    end
-end
-
---- Load player data with validation
---- @param playerId number Player ID
---- @return boolean, table Success status and player data or error message
-function DataManager.LoadPlayerData(playerId)
-    if not playerId or type(playerId) ~= "number" or playerId <= 0 then
-        return false, "Invalid player ID"
-    end
-    
-    local filename = GetPlayerDataFilename(playerId)
-    local success, fileData = DataManager.LoadFromFile(filename)
-    
-    if not success then
-        return false, fileData
-    end
-    
-    -- Validate file structure
-    if not fileData.data then
-        return false, "Invalid player data file structure"
-    end
-    
-    -- Version compatibility check
-    if fileData.version and fileData.version ~= "1.2.0" then
-        LogDataManager(string.format("Player %d data version mismatch: %s", playerId, fileData.version), Constants.LOG_LEVELS.WARN)
-        -- Could implement migration logic here
-    end
-    
-    return true, fileData.data
-end
-
---- Mark player data for saving (used by existing code)
---- @param playerId number Player ID
-function DataManager.MarkPlayerForSave(playerId)
-    if not pendingSaves[playerId] then
-        pendingSaves[playerId] = GetGameTimer()
-    end
-end
-
---- Process pending player saves
-local function ProcessPendingSaves()
-    for playerId, queueTime in pairs(pendingSaves) do
-        local playerData = GetCnrPlayerData(playerId)
-        if playerData then
-            DataManager.SavePlayerData(playerId, playerData, false)
-        end
-        pendingSaves[playerId] = nil
-    end
-end
-
--- ====================================================================
--- SYSTEM DATA MANAGEMENT
--- ====================================================================
-
---- Save system data (bans, purchase history, etc.)
---- @param dataType string Type of data (bans, purchases, banking)
---- @param data table Data to save
---- @return boolean, string Success status and error message
-function DataManager.SaveSystemData(dataType, data)
-    local filename
-    
-    if dataType == "bans" then
-        filename = Constants.FILES.BANS_FILE
-    elseif dataType == "purchases" then
-        filename = Constants.FILES.PURCHASE_HISTORY_FILE
-    elseif dataType == "banking" then
-        filename = Constants.FILES.BANKING_DATA_FILE
-    else
-        return false, "Unknown data type: " .. tostring(dataType)
-    end
-    
-    return DataManager.SaveToFile(filename, data, true)
-end
-
---- Load system data
---- @param dataType string Type of data to load
---- @return boolean, table Success status and loaded data or error message
-function DataManager.LoadSystemData(dataType)
-    local filename
-    
-    if dataType == "bans" then
-        filename = Constants.FILES.BANS_FILE
-    elseif dataType == "purchases" then
-        filename = Constants.FILES.PURCHASE_HISTORY_FILE
-    elseif dataType == "banking" then
-        filename = Constants.FILES.BANKING_DATA_FILE
-    else
-        return false, "Unknown data type: " .. tostring(dataType)
-    end
-    
-    return DataManager.LoadFromFile(filename)
-end
-
--- ====================================================================
--- MONITORING AND STATISTICS
--- ====================================================================
-
---- Get save statistics
---- @return table Save statistics
-function DataManager.GetStats()
-    return {
-        totalSaves = saveStats.totalSaves,
-        failedSaves = saveStats.failedSaves,
-        successRate = saveStats.totalSaves > 0 and ((saveStats.totalSaves - saveStats.failedSaves) / saveStats.totalSaves * 100) or 0,
-        averageSaveTime = saveStats.averageSaveTime,
-        lastSaveTime = saveStats.lastSaveTime,
-        queueSize = #saveQueue,
-        pendingSaves = tablelength(pendingSaves)
-    }
-end
-
---- Log current statistics
-function DataManager.LogStats()
-    local stats = DataManager.GetStats()
-    LogDataManager(string.format(
-        "Stats - Total: %d, Failed: %d, Success Rate: %.1f%%, Avg Time: %.1fms, Queue: %d, Pending: %d",
-        stats.totalSaves, stats.failedSaves, stats.successRate, 
-        stats.averageSaveTime, stats.queueSize, stats.pendingSaves
-    ))
-end
-
--- ====================================================================
--- DATA MANAGER INITIALIZATION AND CLEANUP
--- ====================================================================
-
---- Initialize the data manager
-function DataManager.Initialize()
-    LogDataManager("Data Manager initialized")
-    
-    -- Schedule backups for important files
-    DataManager.ScheduleBackup(Constants.FILES.BANS_FILE)
-    DataManager.ScheduleBackup(Constants.FILES.PURCHASE_HISTORY_FILE)
-    DataManager.ScheduleBackup(Constants.FILES.BANKING_DATA_FILE)
-    
-    -- Start processing threads
-    Citizen.CreateThread(function()
-        while true do
-            Citizen.Wait(Constants.TIME_MS.SAVE_INTERVAL)
-            ProcessSaveQueue()
-            ProcessPendingSaves()
-            ProcessScheduledBackups()
-        end
-    end)
-    
-    -- Statistics logging thread
-    Citizen.CreateThread(function()
-        while true do
-            Citizen.Wait(10 * Constants.TIME_MS.MINUTE) -- Every 10 minutes
-            DataManager.LogStats()
-        end
-    end)
-end
-
---- Cleanup on resource stop
-function DataManager.Cleanup()
-    LogDataManager("Processing final saves before shutdown...")
-    
-    -- Process all pending saves immediately
-    ProcessPendingSaves()
-    
-    -- Process entire save queue
-    while #saveQueue > 0 do
-        ProcessSaveQueue()
-        Citizen.Wait(100)
-    end
-    
-    LogDataManager("Data Manager cleanup completed")
-end
-
--- Initialize when loaded
-DataManager.Initialize()
-
--- ====================================================================
--- SECURE TRANSACTIONS SYSTEM (from secure_transactions.lua)
--- ====================================================================
-
--- Initialize SecureTransactions module
-SecureTransactions = SecureTransactions or {}
-
--- Transaction tracking
-local activeTransactions = {}
-local transactionHistory = {}
-
--- Statistics
-local transactionStats = {
-    totalTransactions = 0,
-    successfulTransactions = 0,
-    failedTransactions = 0,
-    totalMoneyTransferred = 0,
-    averageTransactionTime = 0
-}
-
--- ====================================================================
--- TRANSACTION UTILITY FUNCTIONS
--- ====================================================================
-
---- Generate unique transaction ID
---- @return string Unique transaction ID
-local function GenerateTransactionId()
-    return string.format("txn_%d_%d", GetGameTimer(), math.random(100000, 999999))
-end
-
---- Log transaction operations
---- @param playerId number Player ID
---- @param operation string Operation type
---- @param message string Log message
---- @param level string Log level
-local function LogTransaction(playerId, operation, message, level)
-    level = level or Constants.LOG_LEVELS.INFO
-    local playerName = GetPlayerName(playerId) or "Unknown"
-    
-    if level == Constants.LOG_LEVELS.ERROR or level == Constants.LOG_LEVELS.WARN then
-        print(string.format("[CNR_SECURE_TRANSACTIONS] [%s] Player %s (%d) - %s: %s", 
-            string.upper(level), playerName, playerId, operation, message))
-    end
-end
-
---- Record transaction in history
---- @param transactionData table Transaction data
-local function RecordTransaction(transactionData)
-    table.insert(transactionHistory, transactionData)
-    
-    -- Keep only last 1000 transactions to prevent memory issues
-    if #transactionHistory > 1000 then
-        table.remove(transactionHistory, 1)
-    end
-end
-
--- ====================================================================
--- CORE TRANSACTION FUNCTIONS
--- ====================================================================
-
---- Process item purchase transaction
---- @param playerId number Player ID
---- @param itemId string Item ID
---- @param quantity number Quantity to purchase
---- @param storeType string Store type
---- @return boolean, string Success status and error message
-function SecureTransactions.ProcessPurchase(playerId, itemId, quantity, storeType)
-    local startTime = GetGameTimer()
-    transactionStats.totalTransactions = transactionStats.totalTransactions + 1
-    
-    local transactionId = GenerateTransactionId()
-    
-    -- Validate inputs
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, error
-    end
-    
-    local validItem, itemConfig, itemError = Validation.ValidateItem(itemId)
-    if not validItem then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, itemError
-    end
-    
-    local validQuantity, validatedQuantity, quantityError = Validation.ValidateQuantity(quantity)
-    if not validQuantity then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, quantityError
-    end
-    
-    -- Rate limit purchases
-    if not Validation.CheckRateLimit(playerId, "purchases", 
-        Constants.VALIDATION.MAX_PURCHASES_PER_MINUTE, 
-        Constants.TIME_MS.MINUTE) then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, Constants.ERROR_MESSAGES.RATE_LIMITED
-    end
-    
-    -- Get player data
-    local playerData = GetCnrPlayerData(playerId)
-    if not playerData then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    -- Validate purchase
-    local validPurchase, totalCost, purchaseError = Validation.ValidateItemPurchase(
-        playerId, itemConfig, validatedQuantity, playerData)
-    if not validPurchase then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, purchaseError
-    end
-    
-    -- Start transaction
-    activeTransactions[transactionId] = {
-        playerId = playerId,
-        type = "purchase",
-        itemId = itemId,
-        quantity = validatedQuantity,
-        cost = totalCost,
-        startTime = startTime
-    }
-    
-    -- Deduct money
-    playerData.money = playerData.money - totalCost
-    
-    -- Add item to inventory
-    local addSuccess, addError = SecureInventory.AddItem(playerId, itemId, validatedQuantity, "purchase")
-    if not addSuccess then
-        -- Rollback money deduction
-        playerData.money = playerData.money + totalCost
-        activeTransactions[transactionId] = nil
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, "Failed to add item to inventory: " .. addError
-    end
-    
-    -- Complete transaction
-    activeTransactions[transactionId] = nil
-    transactionStats.successfulTransactions = transactionStats.successfulTransactions + 1
-    transactionStats.totalMoneyTransferred = transactionStats.totalMoneyTransferred + totalCost
-    
-    -- Record transaction
-    RecordTransaction({
-        id = transactionId,
-        playerId = playerId,
-        type = "purchase",
-        itemId = itemId,
-        quantity = validatedQuantity,
-        cost = totalCost,
-        storeType = storeType,
-        timestamp = os.time(),
-        success = true
-    })
-    
-    -- Save player data
-    DataManager.MarkPlayerForSave(playerId)
-    
-    -- Update statistics
-    local transactionTime = GetGameTimer() - startTime
-    transactionStats.averageTransactionTime = (transactionStats.averageTransactionTime + transactionTime) / 2
-    
-    LogTransaction(playerId, "PURCHASE", 
-        string.format("Purchased %d x %s for $%d", validatedQuantity, itemId, totalCost))
-    
-    return true, nil
-end
-
---- Process item sale transaction
---- @param playerId number Player ID
---- @param itemId string Item ID
---- @param quantity number Quantity to sell
---- @return boolean, string Success status and error message
-function SecureTransactions.ProcessSale(playerId, itemId, quantity)
-    local startTime = GetGameTimer()
-    transactionStats.totalTransactions = transactionStats.totalTransactions + 1
-    
-    local transactionId = GenerateTransactionId()
-    
-    -- Validate inputs
-    local valid, error = Validation.ValidatePlayer(playerId)
-    if not valid then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, error
-    end
-    
-    local validItem, itemConfig, itemError = Validation.ValidateItem(itemId)
-    if not validItem then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, itemError
-    end
-    
-    local validQuantity, validatedQuantity, quantityError = Validation.ValidateQuantity(quantity)
-    if not validQuantity then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, quantityError
-    end
-    
-    -- Get player data
-    local playerData = GetCnrPlayerData(playerId)
-    if not playerData then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    -- Validate sale
-    local validSale, saleError = Validation.ValidateItemSale(playerId, itemId, validatedQuantity, playerData)
-    if not validSale then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, saleError
-    end
-    
-    -- Calculate sale price (typically 50% of purchase price)
-    local salePrice = math.floor((itemConfig.basePrice or 0) * validatedQuantity * 0.5)
-    
-    -- Start transaction
-    activeTransactions[transactionId] = {
-        playerId = playerId,
-        type = "sale",
-        itemId = itemId,
-        quantity = validatedQuantity,
-        price = salePrice,
-        startTime = startTime
-    }
-    
-    -- Remove item from inventory
-    local removeSuccess, removeError = SecureInventory.RemoveItem(playerId, itemId, validatedQuantity, "sale")
-    if not removeSuccess then
-        activeTransactions[transactionId] = nil
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, "Failed to remove item from inventory: " .. removeError
-    end
-    
-    -- Add money
-    playerData.money = (playerData.money or 0) + salePrice
-    
-    -- Complete transaction
-    activeTransactions[transactionId] = nil
-    transactionStats.successfulTransactions = transactionStats.successfulTransactions + 1
-    transactionStats.totalMoneyTransferred = transactionStats.totalMoneyTransferred + salePrice
-    
-    -- Record transaction
-    RecordTransaction({
-        id = transactionId,
-        playerId = playerId,
-        type = "sale",
-        itemId = itemId,
-        quantity = validatedQuantity,
-        price = salePrice,
-        timestamp = os.time(),
-        success = true
-    })
-    
-    -- Save player data
-    DataManager.MarkPlayerForSave(playerId)
-    
-    -- Update statistics
-    local transactionTime = GetGameTimer() - startTime
-    transactionStats.averageTransactionTime = (transactionStats.averageTransactionTime + transactionTime) / 2
-    
-    LogTransaction(playerId, "SALE", 
-        string.format("Sold %d x %s for $%d", validatedQuantity, itemId, salePrice))
-    
-    return true, nil
-end
-
---- Transfer money between players
---- @param fromPlayerId number Source player ID
---- @param toPlayerId number Target player ID
---- @param amount number Amount to transfer
---- @param reason string Transfer reason
---- @return boolean, string Success status and error message
-function SecureTransactions.TransferMoney(fromPlayerId, toPlayerId, amount, reason)
-    local startTime = GetGameTimer()
-    transactionStats.totalTransactions = transactionStats.totalTransactions + 1
-    
-    local transactionId = GenerateTransactionId()
-    
-    -- Validate inputs
-    local validFrom, errorFrom = Validation.ValidatePlayer(fromPlayerId)
-    if not validFrom then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, errorFrom
-    end
-    
-    local validTo, errorTo = Validation.ValidatePlayer(toPlayerId)
-    if not validTo then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, errorTo
-    end
-    
-    local validAmount, validatedAmount, amountError = Validation.ValidateMoney(amount, false)
-    if not validAmount then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, amountError
-    end
-    
-    -- Prevent self-transfer
-    if fromPlayerId == toPlayerId then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, "Cannot transfer money to yourself"
-    end
-    
-    -- Get player data
-    local fromPlayerData = GetCnrPlayerData(fromPlayerId)
-    local toPlayerData = GetCnrPlayerData(toPlayerId)
-    
-    if not fromPlayerData or not toPlayerData then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND
-    end
-    
-    -- Validate sender has sufficient funds
-    local validFunds, fundsError = Validation.ValidatePlayerFunds(fromPlayerId, validatedAmount, fromPlayerData)
-    if not validFunds then
-        transactionStats.failedTransactions = transactionStats.failedTransactions + 1
-        return false, fundsError
-    end
-    
-    -- Start transaction
-    activeTransactions[transactionId] = {
-        fromPlayerId = fromPlayerId,
-        toPlayerId = toPlayerId,
-        type = "transfer",
-        amount = validatedAmount,
-        reason = reason,
-        startTime = startTime
-    }
-    
-    -- Transfer money
-    fromPlayerData.money = fromPlayerData.money - validatedAmount
-    toPlayerData.money = (toPlayerData.money or 0) + validatedAmount
-    
-    -- Complete transaction
-    activeTransactions[transactionId] = nil
-    transactionStats.successfulTransactions = transactionStats.successfulTransactions + 1
-    transactionStats.totalMoneyTransferred = transactionStats.totalMoneyTransferred + validatedAmount
-    
-    -- Record transaction
-    RecordTransaction({
-        id = transactionId,
-        fromPlayerId = fromPlayerId,
-        toPlayerId = toPlayerId,
-        type = "transfer",
-        amount = validatedAmount,
-        reason = reason,
-        timestamp = os.time(),
-        success = true
-    })
-    
-    -- Save both players' data
-    DataManager.MarkPlayerForSave(fromPlayerId)
-    DataManager.MarkPlayerForSave(toPlayerId)
-    
-    -- Update statistics
-    local transactionTime = GetGameTimer() - startTime
-    transactionStats.averageTransactionTime = (transactionStats.averageTransactionTime + transactionTime) / 2
-    
-    LogTransaction(fromPlayerId, "TRANSFER_OUT", 
-        string.format("Transferred $%d to player %d (%s)", validatedAmount, toPlayerId, reason or "no reason"))
-    LogTransaction(toPlayerId, "TRANSFER_IN", 
-        string.format("Received $%d from player %d (%s)", validatedAmount, fromPlayerId, reason or "no reason"))
-    
-    return true, nil
-end
-
---- Get transaction statistics
---- @return table Transaction statistics
-function SecureTransactions.GetStats()
-    return {
-        totalTransactions = transactionStats.totalTransactions,
-        successfulTransactions = transactionStats.successfulTransactions,
-        failedTransactions = transactionStats.failedTransactions,
-        successRate = transactionStats.totalTransactions > 0 and 
-            (transactionStats.successfulTransactions / transactionStats.totalTransactions * 100) or 0,
-        totalMoneyTransferred = transactionStats.totalMoneyTransferred,
-        averageTransactionTime = transactionStats.averageTransactionTime,
-        activeTransactions = tablelength(activeTransactions)
-    }
-end
-
---- Initialize secure transactions system
-function SecureTransactions.Initialize()
-    print("[CNR_SECURE_TRANSACTIONS] Secure Transactions System initialized")
-    
-    -- Statistics logging thread
-    Citizen.CreateThread(function()
-        while true do
-            Citizen.Wait(15 * Constants.TIME_MS.MINUTE) -- Every 15 minutes
-            local stats = SecureTransactions.GetStats()
-            print(string.format("[CNR_SECURE_TRANSACTIONS] Stats - Total: %d, Success: %d, Failed: %d, Success Rate: %.1f%%, Money: $%d",
-                stats.totalTransactions, stats.successfulTransactions, stats.failedTransactions, 
-                stats.successRate, stats.totalMoneyTransferred))
-        end
-    end)
-end
-
---- Cleanup transaction data for disconnected player
---- @param playerId number Player ID
-function SecureTransactions.CleanupPlayer(playerId)
-    -- Remove any active transactions for this player
-    for transactionId, transaction in pairs(activeTransactions) do
-        if transaction.playerId == playerId or transaction.fromPlayerId == playerId or transaction.toPlayerId == playerId then
-            activeTransactions[transactionId] = nil
-        end
-    end
-end
-
--- Initialize when loaded
-SecureTransactions.Initialize()
-
--- ====================================================================
--- PLAYER MANAGER SYSTEM (from player_manager.lua)
--- ====================================================================
-
--- Initialize PlayerManager module
-PlayerManager = PlayerManager or {}
-
--- Player data cache (replaces global playersData)
-local playerDataCache = {}
-local playerLoadingStates = {}
-
--- Statistics
-local playerStats = {
-    totalLoads = 0,
-    totalSaves = 0,
-    failedLoads = 0,
-    failedSaves = 0,
-    averageLoadTime = 0,
-    averageSaveTime = 0
-}
-
--- ====================================================================
--- PLAYER MANAGER UTILITY FUNCTIONS
--- ====================================================================
-
---- Log player management operations
---- @param playerId number Player ID
---- @param operation string Operation type
---- @param message string Log message
---- @param level string Log level
-local function LogPlayerManager(playerId, operation, message, level)
-    level = level or Constants.LOG_LEVELS.INFO
-    local playerName = GetPlayerName(playerId) or "Unknown"
-    
-    if level == Constants.LOG_LEVELS.ERROR or level == Constants.LOG_LEVELS.WARN then
-        print(string.format("[CNR_PLAYER_MANAGER] [%s] Player %s (%d) - %s: %s", 
-            string.upper(level), playerName, playerId, operation, message))
-    end
-end
-
---- Get player license identifier safely
---- @param playerId number Player ID
---- @return string, boolean License identifier and success status
-local function GetPlayerLicenseSafe(playerId)
-    local identifiers = GetPlayerIdentifiers(playerId)
-    if not identifiers then
-        return nil, false
-    end
-    
-    for _, identifier in ipairs(identifiers) do
-        if string.find(identifier, "license:") then
-            return identifier, true
-        end
-    end
-    
-    return nil, false
-end
-
---- Create default player data structure
---- @param playerId number Player ID
---- @return table Default player data
-local function CreateDefaultPlayerData(playerId)
-    local playerPed = GetPlayerPed(tostring(playerId))
-    local initialCoords = vector3(0, 0, 70) -- Default spawn location
-    
-    if playerPed and playerPed ~= 0 then
-        local coords = GetEntityCoords(playerPed)
-        if coords then
-            initialCoords = coords
-        end
-    end
-    
-    return {
-        -- Basic player information
-        playerId = playerId,
-        license = GetPlayerLicenseSafe(playerId),
-        name = GetPlayerName(playerId) or "Unknown",
-        
-        -- Game state
-        role = Constants.ROLES.CITIZEN,
-        level = 1,
-        xp = 0,
-        money = Constants.PLAYER_LIMITS.DEFAULT_STARTING_MONEY,
-        
-        -- Position and world state
-        lastKnownPosition = initialCoords,
-        
-        -- Systems
-        inventory = {},
-        
-        -- Timestamps
-        firstJoined = os.time(),
-        lastSeen = os.time(),
-        
-        -- Flags
-        isDataLoaded = false,
-        
-        -- Statistics
-        totalPlayTime = 0,
-        sessionsPlayed = 1,
-        
-        -- Version for data migration
-        dataVersion = "1.2.0"
-    }
-end
-
---- Validate player data structure
---- @param playerData table Player data to validate
---- @return boolean, table Success status and validation issues
-local function ValidatePlayerDataStructure(playerData)
-    local issues = {}
-    
-    if not playerData or type(playerData) ~= "table" then
-        table.insert(issues, "Player data is not a table")
-        return false, issues
-    end
-    
-    -- Check required fields
-    local requiredFields = {
-        "playerId", "role", "level", "xp", "money", "inventory"
-    }
-    
-    for _, field in ipairs(requiredFields) do
-        if playerData[field] == nil then
-            table.insert(issues, string.format("Missing required field: %s", field))
-        end
-    end
-    
-    -- Validate field types and ranges
-    if playerData.level and (type(playerData.level) ~= "number" or playerData.level < 1 or playerData.level > Constants.PLAYER_LIMITS.MAX_PLAYER_LEVEL) then
-        table.insert(issues, "Invalid level value")
-    end
-    
-    if playerData.money and (type(playerData.money) ~= "number" or playerData.money < 0) then
-        table.insert(issues, "Invalid money value")
-    end
-    
-    if playerData.xp and (type(playerData.xp) ~= "number" or playerData.xp < 0) then
-        table.insert(issues, "Invalid XP value")
-    end
-    
-    if playerData.inventory and type(playerData.inventory) ~= "table" then
-        table.insert(issues, "Inventory is not a table")
-    end
-    
-    return #issues == 0, issues
-end
-
---- Fix player data issues
---- @param playerData table Player data to fix
---- @param playerId number Player ID
---- @return table Fixed player data
-local function FixPlayerDataIssues(playerData, playerId)
-    -- Ensure basic structure
-    if not playerData or type(playerData) ~= "table" then
-        LogPlayerManager(playerId, "fix_data", "Creating new data structure due to corruption")
-        return CreateDefaultPlayerData(playerId)
-    end
-    
-    -- Fix missing or invalid fields
-    playerData.playerId = playerData.playerId or playerId
-    playerData.role = playerData.role or Constants.ROLES.CITIZEN
-    playerData.level = math.max(1, math.min(playerData.level or 1, Constants.PLAYER_LIMITS.MAX_PLAYER_LEVEL))
-    playerData.xp = math.max(0, playerData.xp or 0)
-    playerData.money = math.max(0, playerData.money or Constants.PLAYER_LIMITS.DEFAULT_STARTING_MONEY)
-    playerData.inventory = playerData.inventory or {}
-    playerData.lastSeen = os.time()
-    playerData.dataVersion = "1.2.0"
-    
-    -- Validate inventory integrity
-    if SecureInventory then
-        SecureInventory.FixInventoryIntegrity(playerId)
-    end
-    
-    return playerData
-end
-
--- ====================================================================
--- CORE PLAYER DATA FUNCTIONS
--- ====================================================================
-
---- Load player data with comprehensive validation and error handling
---- @param playerId number Player ID
---- @return boolean, string Success status and error message
-function PlayerManager.LoadPlayerData(playerId)
-    local startTime = GetGameTimer()
-    
-    -- Validate player
-    local validPlayer, playerError = Validation.ValidatePlayer(playerId)
-    if not validPlayer then
-        return false, playerError
-    end
-    
-    -- Check if already loading
-    if playerLoadingStates[playerId] then
-        LogPlayerManager(playerId, "load", "Data already loading, skipping duplicate request")
-        return false, "Data already loading"
-    end
-    
-    playerLoadingStates[playerId] = true
-    
-    -- Attempt to load from DataManager
-    local success, playerData = DataManager.LoadPlayerData(playerId)
-    
-    if success then
-        -- Validate loaded data
-        local validData, issues = ValidatePlayerDataStructure(playerData)
-        if not validData then
-            LogPlayerManager(playerId, "load", 
-                string.format("Data validation failed: %s", table.concat(issues, ", ")), 
-                Constants.LOG_LEVELS.WARN)
-            playerData = FixPlayerDataIssues(playerData, playerId)
-        end
-    else
-        -- Create new player data
-        LogPlayerManager(playerId, "load", "Creating new player data (first time or load failed)")
-        playerData = CreateDefaultPlayerData(playerId)
-    end
-    
-    -- Apply any necessary data migrations
-    playerData = PlayerManager.MigratePlayerData(playerData, playerId)
-    
-    -- Cache the data
-    playerDataCache[playerId] = playerData
-    playerData.isDataLoaded = true
-    
-    -- Update statistics
-    playerStats.totalLoads = playerStats.totalLoads + 1
-    if not success then
-        playerStats.failedLoads = playerStats.failedLoads + 1
-    end
-    
-    local loadTime = GetGameTimer() - startTime
-    playerStats.averageLoadTime = (playerStats.averageLoadTime + loadTime) / 2
-    
-    playerLoadingStates[playerId] = nil
-    
-    LogPlayerManager(playerId, "load", 
-        string.format("Data loaded successfully (took %dms)", loadTime))
-    
-    return true, nil
-end
-
---- Save player data with validation and error handling
---- @param playerId number Player ID
---- @param immediate boolean Whether to save immediately or queue
---- @return boolean, string Success status and error message
-function PlayerManager.SavePlayerData(playerId, immediate)
-    local startTime = GetGameTimer()
-    immediate = immediate or false
-    
-    -- Validate player
-    local validPlayer, playerError = Validation.ValidatePlayer(playerId)
-    if not validPlayer then
-        return false, playerError
-    end
-    
-    -- Get player data from cache
-    local playerData = playerDataCache[playerId]
-    if not playerData then
-        return false, "No player data to save"
-    end
-    
-    -- Update last seen timestamp
-    playerData.lastSeen = os.time()
-    
-    -- Update position if player is online
-    local playerPed = GetPlayerPed(tostring(playerId))
-    if playerPed and playerPed ~= 0 then
-        local coords = GetEntityCoords(playerPed)
-        if coords then
-            playerData.lastKnownPosition = coords
-        end
-    end
-    
-    -- Validate data before saving
-    local validData, issues = ValidatePlayerDataStructure(playerData)
-    if not validData then
-        LogPlayerManager(playerId, "save", 
-            string.format("Data validation failed before save: %s", table.concat(issues, ", ")), 
-            Constants.LOG_LEVELS.ERROR)
-        return false, "Data validation failed"
-    end
-    
-    -- Save using DataManager
-    local success, error = DataManager.SavePlayerData(playerId, playerData, immediate)
-    
-    -- Update statistics
-    playerStats.totalSaves = playerStats.totalSaves + 1
-    if not success then
-        playerStats.failedSaves = playerStats.failedSaves + 1
-    end
-    
-    local saveTime = GetGameTimer() - startTime
-    playerStats.averageSaveTime = (playerStats.averageSaveTime + saveTime) / 2
-    
-    if success then
-        LogPlayerManager(playerId, "save", 
-            string.format("Data saved successfully (took %dms, immediate: %s)", 
-                saveTime, tostring(immediate)))
-    else
-        LogPlayerManager(playerId, "save", 
-            string.format("Save failed: %s", error), 
-            Constants.LOG_LEVELS.ERROR)
-    end
-    
-    return success, error
-end
-
---- Get player data from cache with validation
---- @param playerId number Player ID
---- @return table, boolean Player data and success status
-function PlayerManager.GetPlayerData(playerId)
-    -- Validate player
-    local validPlayer, playerError = Validation.ValidatePlayer(playerId)
-    if not validPlayer then
-        return nil, false
-    end
-    
-    local playerData = playerDataCache[playerId]
-    if not playerData then
-        LogPlayerManager(playerId, "get_data", "No cached data found", Constants.LOG_LEVELS.WARN)
-        return nil, false
-    end
-    
-    if not playerData.isDataLoaded then
-        LogPlayerManager(playerId, "get_data", "Data not fully loaded", Constants.LOG_LEVELS.WARN)
-        return nil, false
-    end
-    
-    return playerData, true
-end
-
---- Set player data in cache with validation
---- @param playerId number Player ID
---- @param playerData table Player data to set
---- @return boolean Success status
-function PlayerManager.SetPlayerData(playerId, playerData)
-    -- Validate player
-    local validPlayer, playerError = Validation.ValidatePlayer(playerId)
-    if not validPlayer then
-        return false
-    end
-    
-    -- Validate data structure
-    local validData, issues = ValidatePlayerDataStructure(playerData)
-    if not validData then
-        LogPlayerManager(playerId, "set_data", 
-            string.format("Invalid data structure: %s", table.concat(issues, ", ")), 
-            Constants.LOG_LEVELS.ERROR)
-        return false
-    end
-    
-    playerDataCache[playerId] = playerData
-    DataManager.MarkPlayerForSave(playerId)
-    
-    return true
-end
-
--- ====================================================================
--- DATA MIGRATION SYSTEM
--- ====================================================================
-
---- Migrate player data to current version
---- @param playerData table Player data to migrate
---- @param playerId number Player ID
---- @return table Migrated player data
-function PlayerManager.MigratePlayerData(playerData, playerId)
-    local currentVersion = "1.2.0"
-    local dataVersion = playerData.dataVersion or "1.0.0"
-    
-    if dataVersion == currentVersion then
-        return playerData -- No migration needed
-    end
-    
-    LogPlayerManager(playerId, "migrate", 
-        string.format("Migrating data from version %s to %s", dataVersion, currentVersion))
-    
-    -- Migration logic for different versions
-    if dataVersion == "1.0.0" or dataVersion == "1.1.0" then
-        -- Add new fields introduced in 1.2.0
-        playerData.dataVersion = currentVersion
-        playerData.totalPlayTime = playerData.totalPlayTime or 0
-        playerData.sessionsPlayed = playerData.sessionsPlayed or 1
-        
-        -- Ensure inventory structure is correct
-        if not playerData.inventory or type(playerData.inventory) ~= "table" then
-            playerData.inventory = {}
-        end
-        
-        -- Fix any legacy role names
-        if playerData.role == "civilian" then
-            playerData.role = Constants.ROLES.CITIZEN
-        end
-    end
-    
-    LogPlayerManager(playerId, "migrate", "Data migration completed successfully")
-    return playerData
-end
-
--- ====================================================================
--- PLAYER LIFECYCLE MANAGEMENT
--- ====================================================================
-
---- Handle player connection
---- @param playerId number Player ID
-function PlayerManager.OnPlayerConnected(playerId)
-    LogPlayerManager(playerId, "connect", "Player connected, initializing data")
-    
-    -- Load player data
-    local success, error = PlayerManager.LoadPlayerData(playerId)
-    if not success then
-        LogPlayerManager(playerId, "connect", 
-            string.format("Failed to load data: %s", error), 
-            Constants.LOG_LEVELS.ERROR)
-        return
-    end
-    
-    -- Initialize player systems
-    PlayerManager.InitializePlayerSystems(playerId)
-    
-    LogPlayerManager(playerId, "connect", "Player initialization completed")
-end
-
---- Handle player disconnection
---- @param playerId number Player ID
---- @param reason string Disconnect reason
-function PlayerManager.OnPlayerDisconnected(playerId, reason)
-    LogPlayerManager(playerId, "disconnect", 
-        string.format("Player disconnected (reason: %s), saving data", reason or "unknown"))
-    
-    -- Save player data immediately
-    local success, error = PlayerManager.SavePlayerData(playerId, true)
-    if not success then
-        LogPlayerManager(playerId, "disconnect", 
-            string.format("Failed to save data: %s", error), 
-            Constants.LOG_LEVELS.ERROR)
-    end
-    
-    -- Clean up player from cache and other systems
-    PlayerManager.CleanupPlayer(playerId)
-    
-    LogPlayerManager(playerId, "disconnect", "Player cleanup completed")
-end
-
---- Initialize player systems after data load
---- @param playerId number Player ID
-function PlayerManager.InitializePlayerSystems(playerId)
-    local playerData = playerDataCache[playerId]
-    if not playerData then
-        LogPlayerManager(playerId, "init_systems", "No player data available", Constants.LOG_LEVELS.ERROR)
-        return
-    end
-    
-    -- Set player role (this will trigger role-specific initialization)
-    PlayerManager.SetPlayerRole(playerId, playerData.role, true)
-    
-    -- Apply level-based perks
-    if ApplyPerks then
-        ApplyPerks(playerId, playerData.level, playerData.role)
-    end
-    
-    -- Initialize inventory
-    if not playerData.inventory then
-        playerData.inventory = {}
-    end
-    
-    -- Sync data to client
-    PlayerManager.SyncPlayerDataToClient(playerId)
-    
-    LogPlayerManager(playerId, "init_systems", "Player systems initialized")
-end
-
---- Sync player data to client
---- @param playerId number Player ID
-function PlayerManager.SyncPlayerDataToClient(playerId)
-    local playerData = playerDataCache[playerId]
-    if not playerData then return end
-    
-    -- Send minimized inventory for performance
-    if SecureInventory then
-        local success, inventory = SecureInventory.GetInventory(playerId)
-        if success then
-            TriggerClientEvent('cnr:syncInventory', playerId, 
-                MinimizeInventoryForSync(inventory))
-        end
-    end
-    
-    -- Send other player data
-    TriggerClientEvent('cnr:updatePlayerData', playerId, {
-        role = playerData.role,
-        level = playerData.level,
-        xp = playerData.xp,
-        money = playerData.money
-    })
-end
-
---- Clean up player data and references
---- @param playerId number Player ID
-function PlayerManager.CleanupPlayer(playerId)
-    -- Remove from cache
-    playerDataCache[playerId] = nil
-    playerLoadingStates[playerId] = nil
-    
-    -- Clean up other systems
-    if Validation then
-        Validation.CleanupPlayer(playerId)
-    end
-    
-    if SecureInventory then
-        SecureInventory.CleanupPlayer(playerId)
-    end
-    
-    if SecureTransactions then
-        SecureTransactions.CleanupPlayer(playerId)
-    end
-    
-    LogPlayerManager(playerId, "cleanup", "Player cleanup completed")
-end
-
--- ====================================================================
--- ROLE MANAGEMENT
--- ====================================================================
-
---- Set player role with validation and system updates
---- @param playerId number Player ID
---- @param role string New role
---- @param skipNotify boolean Whether to skip notification
---- @return boolean Success status
-function PlayerManager.SetPlayerRole(playerId, role, skipNotify)
-    -- Validate player
-    local validPlayer, playerError = Validation.ValidatePlayer(playerId)
-    if not validPlayer then
-        return false
-    end
-    
-    -- Validate role
-    local validRoles = {Constants.ROLES.COP, Constants.ROLES.ROBBER, Constants.ROLES.CITIZEN}
-    local isValidRole = false
-    for _, validRole in ipairs(validRoles) do
-        if role == validRole then
-            isValidRole = true
-            break
-        end
-    end
-    
-    if not isValidRole then
-        LogPlayerManager(playerId, "set_role", 
-            string.format("Invalid role: %s", tostring(role)), 
-            Constants.LOG_LEVELS.ERROR)
-        return false
-    end
-    
-    local playerData = playerDataCache[playerId]
-    if not playerData then
-        LogPlayerManager(playerId, "set_role", "No player data available", Constants.LOG_LEVELS.ERROR)
-        return false
-    end
-    
-    local oldRole = playerData.role
-    playerData.role = role
-    
-    -- Update role-specific tracking (using existing global variables for compatibility)
-    if copsOnDuty then
-        copsOnDuty[playerId] = (role == Constants.ROLES.COP) or nil
-    end
-    
-    if robbersActive then
-        robbersActive[playerId] = (role == Constants.ROLES.ROBBER) or nil
-    end
-    
-    -- Mark for save
-    DataManager.MarkPlayerForSave(playerId)
-    
-    -- Notify player if not skipped
-    if not skipNotify then
-        TriggerClientEvent('cnr:showNotification', playerId, 
-            string.format("Role changed to %s", role), "success")
-    end
-    
-    LogPlayerManager(playerId, "set_role", 
-        string.format("Role changed from %s to %s", oldRole, role))
-    
-    return true
-end
-
---- Get player statistics
---- @return table Player manager statistics
-function PlayerManager.GetStats()
-    return {
-        totalLoads = playerStats.totalLoads,
-        totalSaves = playerStats.totalSaves,
-        failedLoads = playerStats.failedLoads,
-        failedSaves = playerStats.failedSaves,
-        loadSuccessRate = playerStats.totalLoads > 0 and ((playerStats.totalLoads - playerStats.failedLoads) / playerStats.totalLoads * 100) or 0,
-        saveSuccessRate = playerStats.totalSaves > 0 and ((playerStats.totalSaves - playerStats.failedSaves) / playerStats.totalSaves * 100) or 0,
-        averageLoadTime = playerStats.averageLoadTime,
-        averageSaveTime = playerStats.averageSaveTime,
-        activePlayers = tablelength(playerDataCache),
-        loadingPlayers = tablelength(playerLoadingStates)
-    }
-end
-
---- Log current statistics
-function PlayerManager.LogStats()
-    local stats = PlayerManager.GetStats()
-    print(string.format("[CNR_PLAYER_MANAGER] Stats - Loads: %d (%.1f%% success), Saves: %d (%.1f%% success), Active: %d",
-        stats.totalLoads, stats.loadSuccessRate, stats.totalSaves, stats.saveSuccessRate, stats.activePlayers))
-end
-
---- Initialize player manager
-function PlayerManager.Initialize()
-    print("[CNR_PLAYER_MANAGER] Player Manager initialized")
-    
-    -- Statistics logging thread
-    Citizen.CreateThread(function()
-        while true do
-            Citizen.Wait(10 * Constants.TIME_MS.MINUTE)
-            PlayerManager.LogStats()
-        end
-    end)
-end
-
--- Initialize when loaded
-PlayerManager.Initialize()
-
--- Update the global GetCnrPlayerData function to use PlayerManager
-function GetCnrPlayerData(playerId)
-    local playerData, success = PlayerManager.GetPlayerData(playerId)
-    return success and playerData or nil
-end
-
--- ====================================================================
--- PERFORMANCE OPTIMIZER SYSTEM (from performance_optimizer.lua)
--- ====================================================================
-
--- Initialize PerformanceOptimizer module
-PerformanceOptimizer = PerformanceOptimizer or {}
-
--- Performance monitoring data
-local performanceMetrics = {
-    frameTime = 0,
-    memoryUsage = 0,
-    activeThreads = 0,
-    networkEvents = 0,
-    lastUpdate = 0
-}
-
--- Optimized loop management
-local optimizedLoops = {}
-local loopCounter = 0
-
--- Event batching system
-local eventBatches = {}
-local batchTimers = {}
-
--- ====================================================================
--- LOOP OPTIMIZATION SYSTEM
--- ====================================================================
-
---- Adjust loop interval based on performance metrics
---- @param loopData table Loop data structure
---- @param lastExecutionTime number Last execution time in milliseconds
-local function AdjustLoopInterval(loopData, lastExecutionTime)
-    -- If execution time is high, increase interval
-    if lastExecutionTime > Constants.PERFORMANCE.MAX_EXECUTION_TIME_MS then
-        loopData.currentInterval = math.min(loopData.currentInterval * 1.2, loopData.maxInterval)
-    -- If execution time is low and we're not at base interval, decrease it
-    elseif lastExecutionTime < Constants.PERFORMANCE.MAX_EXECUTION_TIME_MS * 0.5 and 
-           loopData.currentInterval > loopData.baseInterval then
-        loopData.currentInterval = math.max(loopData.currentInterval * 0.9, loopData.baseInterval)
-    end
-    
-    -- Priority-based adjustments
-    if loopData.priority <= 2 then
-        -- High priority loops get preference
-        loopData.currentInterval = math.max(loopData.currentInterval * 0.8, loopData.baseInterval)
-    elseif loopData.priority >= 4 then
-        -- Low priority loops get throttled more aggressively
-        loopData.currentInterval = math.min(loopData.currentInterval * 1.5, loopData.maxInterval)
-    end
-end
-
---- Create an optimized loop that automatically adjusts its interval based on performance
---- @param callback function Function to execute
---- @param baseInterval number Base interval in milliseconds
---- @param maxInterval number Maximum interval in milliseconds
---- @param priority number Priority level (1-5, 1 being highest)
---- @return number Loop ID for management
-function PerformanceOptimizer.CreateOptimizedLoop(callback, baseInterval, maxInterval, priority)
-    loopCounter = loopCounter + 1
-    priority = priority or 3
-    maxInterval = maxInterval or baseInterval * 5
-    
-    local loopData = {
-        id = loopCounter,
-        callback = callback,
-        baseInterval = baseInterval,
-        maxInterval = maxInterval,
-        currentInterval = baseInterval,
-        priority = priority,
-        lastExecution = 0,
-        executionCount = 0,
-        totalExecutionTime = 0,
-        averageExecutionTime = 0,
-        active = true
-    }
-    
-    optimizedLoops[loopCounter] = loopData
-    
-    -- Start the loop thread
-    Citizen.CreateThread(function()
-        while loopData.active do
-            local startTime = GetGameTimer()
-            
-            -- Execute callback with error handling
-            local success, error = pcall(callback)
-            if not success then
-                print(string.format("[CNR_PERFORMANCE] Loop %d error: %s", loopData.id, tostring(error)))
-            end
-            
-            -- Update performance metrics
-            local executionTime = GetGameTimer() - startTime
-            loopData.executionCount = loopData.executionCount + 1
-            loopData.totalExecutionTime = loopData.totalExecutionTime + executionTime
-            loopData.averageExecutionTime = loopData.totalExecutionTime / loopData.executionCount
-            loopData.lastExecution = startTime
-            
-            -- Adjust interval based on performance
-            AdjustLoopInterval(loopData, executionTime)
-            
-            Citizen.Wait(loopData.currentInterval)
-        end
-    end)
-    
-    print(string.format("[CNR_PERFORMANCE] Created optimized loop %d (base: %dms, max: %dms, priority: %d)", 
-        loopCounter, baseInterval, maxInterval, priority))
-    
-    return loopCounter
-end
-
---- Stop an optimized loop
---- @param loopId number Loop ID to stop
-function PerformanceOptimizer.StopOptimizedLoop(loopId)
-    if optimizedLoops[loopId] then
-        optimizedLoops[loopId].active = false
-        optimizedLoops[loopId] = nil
-        print(string.format("[CNR_PERFORMANCE] Stopped optimized loop %d", loopId))
-    end
-end
-
--- ====================================================================
--- EVENT BATCHING SYSTEM
--- ====================================================================
-
---- Batch events to reduce network overhead
---- @param eventName string Event name
---- @param playerId number Player ID (or -1 for all players)
---- @param data any Event data
---- @param batchInterval number Batching interval in milliseconds
-function PerformanceOptimizer.BatchEvent(eventName, playerId, data, batchInterval)
-    batchInterval = batchInterval or 100 -- Default 100ms batching
-    
-    local batchKey = string.format("%s_%s", eventName, tostring(playerId))
-    
-    -- Initialize batch if it doesn't exist
-    if not eventBatches[batchKey] then
-        eventBatches[batchKey] = {
-            eventName = eventName,
-            playerId = playerId,
-            data = {},
-            count = 0
-        }
-    end
-    
-    -- Add data to batch
-    table.insert(eventBatches[batchKey].data, data)
-    eventBatches[batchKey].count = eventBatches[batchKey].count + 1
-    
-    -- Set timer if not already set
-    if not batchTimers[batchKey] then
-        batchTimers[batchKey] = Citizen.SetTimeout(batchInterval, function()
-            PerformanceOptimizer.FlushEventBatch(batchKey)
-        end)
-    end
-end
-
---- Flush a specific event batch
---- @param batchKey string Batch key
-function PerformanceOptimizer.FlushEventBatch(batchKey)
-    local batch = eventBatches[batchKey]
-    if not batch or batch.count == 0 then
-        return
-    end
-    
-    -- Send batched event
-    if batch.playerId == -1 then
-        -- Send to all players
-        TriggerClientEvent(batch.eventName, -1, batch.data)
-    else
-        -- Send to specific player
-        TriggerClientEvent(batch.eventName, batch.playerId, batch.data)
-    end
-    
-    -- Clean up
-    eventBatches[batchKey] = nil
-    batchTimers[batchKey] = nil
-    
-    print(string.format("[CNR_PERFORMANCE] Flushed batch %s with %d events", batchKey, batch.count))
-end
-
---- Flush all event batches immediately
-function PerformanceOptimizer.FlushAllBatches()
-    for batchKey, _ in pairs(eventBatches) do
-        PerformanceOptimizer.FlushEventBatch(batchKey)
-    end
-end
-
--- ====================================================================
--- MEMORY OPTIMIZATION
--- ====================================================================
-
---- Optimize table memory usage by removing nil values and compacting
---- @param tbl table Table to optimize
---- @return table Optimized table
-function PerformanceOptimizer.OptimizeTable(tbl)
-    if type(tbl) ~= "table" then
-        return tbl
-    end
-    
-    local optimized = {}
-    for k, v in pairs(tbl) do
-        if v ~= nil then
-            if type(v) == "table" then
-                optimized[k] = PerformanceOptimizer.OptimizeTable(v)
-            else
-                optimized[k] = v
-            end
-        end
-    end
-    
-    return optimized
-end
-
---- Clean up unused references and force garbage collection
-function PerformanceOptimizer.CleanupMemory()
-    -- Clean up optimized loops that are no longer active
-    for loopId, loopData in pairs(optimizedLoops) do
-        if not loopData.active then
-            optimizedLoops[loopId] = nil
-        end
-    end
-    
-    -- Clean up old event batches
-    local currentTime = GetGameTimer()
-    for batchKey, timer in pairs(batchTimers) do
-        if currentTime - timer > 5000 then -- 5 second timeout
-            eventBatches[batchKey] = nil
-            batchTimers[batchKey] = nil
-        end
-    end
-    
-    -- Force garbage collection
-    collectgarbage("collect")
-    
-    print("[CNR_PERFORMANCE] Memory cleanup completed")
-end
-
--- ====================================================================
--- PERFORMANCE MONITORING
--- ====================================================================
-
---- Update performance metrics
-local function UpdatePerformanceMetrics()
-    performanceMetrics.lastUpdate = GetGameTimer()
-    performanceMetrics.activeThreads = tablelength(optimizedLoops)
-    
-    -- Calculate memory usage (approximation)
-    local memBefore = collectgarbage("count")
-    collectgarbage("collect")
-    local memAfter = collectgarbage("count")
-    performanceMetrics.memoryUsage = memAfter
-    
-    -- Restore memory state
-    collectgarbage("restart")
-end
-
---- Get current performance metrics
---- @return table Performance metrics
-function PerformanceOptimizer.GetMetrics()
-    UpdatePerformanceMetrics()
-    return {
-        frameTime = performanceMetrics.frameTime,
-        memoryUsage = performanceMetrics.memoryUsage,
-        activeThreads = performanceMetrics.activeThreads,
-        networkEvents = performanceMetrics.networkEvents,
-        lastUpdate = performanceMetrics.lastUpdate,
-        optimizedLoops = tablelength(optimizedLoops),
-        eventBatches = tablelength(eventBatches)
-    }
-end
-
---- Log performance statistics
-function PerformanceOptimizer.LogStats()
-    local metrics = PerformanceOptimizer.GetMetrics()
-    print(string.format("[CNR_PERFORMANCE] Stats - Memory: %.1fKB, Threads: %d, Loops: %d, Batches: %d",
-        metrics.memoryUsage, metrics.activeThreads, metrics.optimizedLoops, metrics.eventBatches))
-    
-    -- Log individual loop performance
-    for loopId, loopData in pairs(optimizedLoops) do
-        if loopData.executionCount > 0 then
-            print(string.format("[CNR_PERFORMANCE] Loop %d - Avg: %.1fms, Count: %d, Interval: %dms",
-                loopId, loopData.averageExecutionTime, loopData.executionCount, loopData.currentInterval))
-        end
-    end
-end
-
---- Check for performance warnings
-function PerformanceOptimizer.CheckPerformanceWarnings()
-    local metrics = PerformanceOptimizer.GetMetrics()
-    
-    -- Memory warning
-    if metrics.memoryUsage > Constants.PERFORMANCE.MEMORY_WARNING_THRESHOLD_MB * 1024 then
-        print(string.format("[CNR_PERFORMANCE] WARNING: High memory usage: %.1fMB", 
-            metrics.memoryUsage / 1024))
-        PerformanceOptimizer.CleanupMemory()
-    end
-    
-    -- Loop performance warnings
-    for loopId, loopData in pairs(optimizedLoops) do
-        if loopData.averageExecutionTime > Constants.PERFORMANCE.MAX_EXECUTION_TIME_MS then
-            print(string.format("[CNR_PERFORMANCE] WARNING: Loop %d slow execution: %.1fms average",
-                loopId, loopData.averageExecutionTime))
-        end
-    end
-end
-
--- ====================================================================
--- OPTIMIZED REPLACEMENTS FOR COMMON PATTERNS
--- ====================================================================
-
---- Optimized player iteration with early exit and batching
---- @param callback function Function to call for each player
---- @param batchSize number Number of players to process per frame
-function PerformanceOptimizer.ForEachPlayerOptimized(callback, batchSize)
-    batchSize = batchSize or 10
-    local players = GetPlayers()
-    local currentBatch = 0
-    
-    Citizen.CreateThread(function()
-        for i, playerId in ipairs(players) do
-            -- Validate player is still online
-            if GetPlayerName(playerId) then
-                local success, error = pcall(callback, tonumber(playerId))
-                if not success then
-                    print(string.format("[CNR_PERFORMANCE] Player iteration error for %s: %s", 
-                        playerId, tostring(error)))
-                end
-            end
-            
-            currentBatch = currentBatch + 1
-            
-            -- Yield every batchSize players to prevent frame drops
-            if currentBatch >= batchSize then
-                currentBatch = 0
-                Citizen.Wait(0)
-            end
-        end
-    end)
-end
-
---- Optimized distance checking with caching
-local distanceCache = {}
-local distanceCacheTime = {}
-
-function PerformanceOptimizer.GetDistanceCached(pos1, pos2, cacheTime)
-    cacheTime = cacheTime or 1000 -- 1 second cache by default
-    
-    local cacheKey = string.format("%.1f_%.1f_%.1f_%.1f_%.1f_%.1f", 
-        pos1.x, pos1.y, pos1.z, pos2.x, pos2.y, pos2.z)
-    
-    local currentTime = GetGameTimer()
-    
-    -- Check cache
-    if distanceCache[cacheKey] and 
-       distanceCacheTime[cacheKey] and 
-       (currentTime - distanceCacheTime[cacheKey]) < cacheTime then
-        return distanceCache[cacheKey]
-    end
-    
-    -- Calculate distance
-    local distance = #(pos1 - pos2)
-    
-    -- Cache result
-    distanceCache[cacheKey] = distance
-    distanceCacheTime[cacheKey] = currentTime
-    
-    return distance
-end
-
---- Clean distance cache periodically
-local function CleanDistanceCache()
-    local currentTime = GetGameTimer()
-    local cleanupThreshold = 5000 -- 5 seconds
-    
-    for cacheKey, cacheTime in pairs(distanceCacheTime) do
-        if (currentTime - cacheTime) > cleanupThreshold then
-            distanceCache[cacheKey] = nil
-            distanceCacheTime[cacheKey] = nil
-        end
-    end
-end
-
--- ====================================================================
--- PERFORMANCE OPTIMIZER INITIALIZATION AND CLEANUP
--- ====================================================================
-
---- Initialize performance optimizer
-function PerformanceOptimizer.Initialize()
-    print("[CNR_PERFORMANCE] Performance Optimizer initialized")
-    
-    -- Create monitoring loop
-    PerformanceOptimizer.CreateOptimizedLoop(function()
-        PerformanceOptimizer.CheckPerformanceWarnings()
-    end, 30000, 60000, 4) -- Low priority, 30s base interval
-    
-    -- Create cleanup loop
-    PerformanceOptimizer.CreateOptimizedLoop(function()
-        PerformanceOptimizer.CleanupMemory()
-        CleanDistanceCache()
-    end, 60000, 120000, 5) -- Lowest priority, 1 minute base interval
-    
-    -- Create stats logging loop
-    PerformanceOptimizer.CreateOptimizedLoop(function()
-        PerformanceOptimizer.LogStats()
-    end, 300000, 600000, 5) -- Lowest priority, 5 minute base interval
-end
-
---- Cleanup on resource stop
-function PerformanceOptimizer.Cleanup()
-    print("[CNR_PERFORMANCE] Cleaning up performance optimizer...")
-    
-    -- Stop all optimized loops
-    for loopId, _ in pairs(optimizedLoops) do
-        PerformanceOptimizer.StopOptimizedLoop(loopId)
-    end
-    
-    -- Flush all event batches
-    PerformanceOptimizer.FlushAllBatches()
-    
-    -- Final memory cleanup
-    PerformanceOptimizer.CleanupMemory()
-    
-    print("[CNR_PERFORMANCE] Performance optimizer cleanup completed")
-end
-
--- Initialize when loaded
-PerformanceOptimizer.Initialize()
-
--- ====================================================================
--- INTEGRATION MANAGER SYSTEM (from integration_manager.lua)
--- ====================================================================
-
--- Initialize IntegrationManager module
-IntegrationManager = IntegrationManager or {}
-
--- Integration status tracking
-local integrationStatus = {
-    initialized = false,
-    modulesLoaded = {},
-    migrationComplete = false,
-    startTime = 0
-}
-
--- Legacy compatibility layer
-local legacyFunctions = {}
-
--- ====================================================================
--- INITIALIZATION SYSTEM
--- ====================================================================
-
---- Initialize all refactored systems in the correct order
-function IntegrationManager.Initialize()
-    integrationStatus.startTime = GetGameTimer()
-    
-    print("[CNR_INTEGRATION] Starting system initialization...")
-    
-    -- Initialize core systems first
-    local initOrder = {
-        {name = "Constants", module = Constants, required = true},
-        {name = "Validation", module = Validation, required = true},
-        {name = "DataManager", module = DataManager, required = true},
-        {name = "SecureInventory", module = SecureInventory, required = true},
-        {name = "SecureTransactions", module = SecureTransactions, required = true},
-        {name = "PlayerManager", module = PlayerManager, required = true},
-        {name = "PerformanceOptimizer", module = PerformanceOptimizer, required = false}
-    }
-    
-    for _, system in ipairs(initOrder) do
-        local success = IntegrationManager.InitializeSystem(system.name, system.module, system.required)
-        integrationStatus.modulesLoaded[system.name] = success
-        
-        if system.required and not success then
-            error(string.format("Failed to initialize required system: %s", system.name))
-        end
-    end
-    
-    -- Set up legacy compatibility
-    IntegrationManager.SetupLegacyCompatibility()
-    
-    -- Perform data migration if needed
-    IntegrationManager.PerformDataMigration()
-    
-    -- Start monitoring systems
-    IntegrationManager.StartMonitoring()
-    
-    integrationStatus.initialized = true
-    local initTime = GetGameTimer() - integrationStatus.startTime
-    
-    print(string.format("[CNR_INTEGRATION] System initialization completed in %dms", initTime))
-    
-    -- Log initialization status
-    IntegrationManager.LogInitializationStatus()
-end
-
---- Initialize a specific system with error handling
---- @param systemName string Name of the system
---- @param systemModule table System module
---- @param required boolean Whether the system is required
---- @return boolean Success status
-function IntegrationManager.InitializeSystem(systemName, systemModule, required)
-    print(string.format("[CNR_INTEGRATION] Initializing %s...", systemName))
-    
-    local success, error = pcall(function()
-        if systemModule and systemModule.Initialize then
-            systemModule.Initialize()
-        end
-    end)
-    
-    if success then
-        print(string.format("[CNR_INTEGRATION] ✅ %s initialized successfully", systemName))
-        return true
-    else
-        local logLevel = required and "error" or "warn"
-        print(string.format("[CNR_INTEGRATION] ❌ Failed to initialize %s: %s", systemName, tostring(error)))
-        return false
-    end
-end
-
--- ====================================================================
--- LEGACY COMPATIBILITY LAYER
--- ====================================================================
-
---- Set up compatibility functions for existing code
-function IntegrationManager.SetupLegacyCompatibility()
-    print("[CNR_INTEGRATION] Setting up legacy compatibility layer...")
-    
-    -- Store original functions if they exist
-    legacyFunctions.AddItemToPlayerInventory = AddItemToPlayerInventory
-    legacyFunctions.RemoveItemFromPlayerInventory = RemoveItemFromPlayerInventory
-    legacyFunctions.AddPlayerMoney = AddPlayerMoney
-    legacyFunctions.RemovePlayerMoney = RemovePlayerMoney
-    
-    -- Replace with secure versions
-    AddItemToPlayerInventory = function(playerId, itemId, quantity, itemDetails)
-        local success, message = SecureInventory.AddItem(playerId, itemId, quantity, "legacy_add")
-        return success, message
-    end
-    
-    RemoveItemFromPlayerInventory = function(playerId, itemId, quantity)
-        local success, message = SecureInventory.RemoveItem(playerId, itemId, quantity, "legacy_remove")
-        return success, message
-    end
-    
-    AddPlayerMoney = function(playerId, amount)
-        local success, message = SecureTransactions.AddMoney(playerId, amount, "legacy_add")
-        return success
-    end
-    
-    RemovePlayerMoney = function(playerId, amount)
-        local success, message = SecureTransactions.RemoveMoney(playerId, amount, "legacy_remove")
-        return success
-    end
-    
-    -- Enhanced MarkPlayerForInventorySave compatibility
-    MarkPlayerForInventorySave = function(playerId)
-        DataManager.MarkPlayerForSave(playerId)
-    end
-    
-    print("[CNR_INTEGRATION] ✅ Legacy compatibility layer established")
-end
-
--- ====================================================================
--- DATA MIGRATION SYSTEM
--- ====================================================================
-
---- Perform data migration from old format to new format
-function IntegrationManager.PerformDataMigration()
-    print("[CNR_INTEGRATION] Starting data migration...")
-    
-    -- Check if migration is needed
-    local migrationNeeded = IntegrationManager.CheckMigrationNeeded()
-    
-    if not migrationNeeded then
-        print("[CNR_INTEGRATION] No data migration needed")
-        integrationStatus.migrationComplete = true
-        return
-    end
-    
-    -- Perform migration
-    local success, error = pcall(function()
-        IntegrationManager.MigratePlayerData()
-        IntegrationManager.MigrateSystemData()
-    end)
-    
-    if success then
-        print("[CNR_INTEGRATION] ✅ Data migration completed successfully")
-        integrationStatus.migrationComplete = true
-    else
-        print(string.format("[CNR_INTEGRATION] ❌ Data migration failed: %s", tostring(error)))
-    end
-end
-
---- Check if data migration is needed
---- @return boolean Whether migration is needed
-function IntegrationManager.CheckMigrationNeeded()
-    -- Check for old format files
-    local oldFormatFiles = {
-        "bans.json",
-        "purchase_history.json"
-    }
-    
-    for _, filename in ipairs(oldFormatFiles) do
-        local fileData = LoadResourceFile(GetCurrentResourceName(), filename)
-        if fileData then
-            local success, data = pcall(json.decode, fileData)
-            if success and data and not data.version then
-                return true -- Old format detected
-            end
-        end
-    end
-    
-    return false
-end
-
---- Migrate player data files
-function IntegrationManager.MigratePlayerData()
-    print("[CNR_INTEGRATION] Migrating player data...")
-    
-    -- This would scan the player_data directory and migrate files
-    -- For now, we'll rely on PlayerManager's built-in migration
-    print("[CNR_INTEGRATION] Player data migration handled by PlayerManager")
-end
-
---- Migrate system data files
-function IntegrationManager.MigrateSystemData()
-    print("[CNR_INTEGRATION] Migrating system data...")
-    
-    -- Migrate bans.json
-    local success, bansData = DataManager.LoadSystemData("bans")
-    if success and bansData then
-        if not bansData.version then
-            bansData.version = "1.2.0"
-            bansData.migrated = os.time()
-            DataManager.SaveSystemData("bans", bansData)
-            print("[CNR_INTEGRATION] Migrated bans.json")
-        end
-    end
-    
-    -- Migrate purchase_history.json
-    local success, purchaseData = DataManager.LoadSystemData("purchases")
-    if success and purchaseData then
-        if not purchaseData.version then
-            purchaseData.version = "1.2.0"
-            purchaseData.migrated = os.time()
-            DataManager.SaveSystemData("purchases", purchaseData)
-            print("[CNR_INTEGRATION] Migrated purchase_history.json")
-        end
-    end
-end
-
--- ====================================================================
--- MONITORING AND HEALTH CHECKS
--- ====================================================================
-
---- Start monitoring systems
-function IntegrationManager.StartMonitoring()
-    print("[CNR_INTEGRATION] Starting system monitoring...")
-    
-    -- Create monitoring loop using PerformanceOptimizer
-    if PerformanceOptimizer then
-        PerformanceOptimizer.CreateOptimizedLoop(function()
-            IntegrationManager.PerformHealthCheck()
-        end, 60000, 120000, 3) -- 1 minute base interval, medium priority
-        
-        PerformanceOptimizer.CreateOptimizedLoop(function()
-            IntegrationManager.LogSystemStats()
-        end, 300000, 600000, 5) -- 5 minute base interval, low priority
-    end
-end
-
---- Perform health check on all systems
-function IntegrationManager.PerformHealthCheck()
-    local issues = {}
-    
-    -- Check each system
-    for systemName, loaded in pairs(integrationStatus.modulesLoaded) do
-        if not loaded then
-            table.insert(issues, string.format("%s not loaded", systemName))
-        end
-    end
-    
-    -- Check data integrity
-    if DataManager then
-        local stats = DataManager.GetStats()
-        if stats.failedSaves > 0 then
-            table.insert(issues, string.format("DataManager has %d failed saves", stats.failedSaves))
-        end
-    end
-    
-    -- Check performance
-    if PerformanceOptimizer then
-        local metrics = PerformanceOptimizer.GetMetrics()
-        if metrics.memoryUsage > Constants.PERFORMANCE.MEMORY_WARNING_THRESHOLD_MB * 1024 then
-            table.insert(issues, string.format("High memory usage: %.1fMB", metrics.memoryUsage / 1024))
-        end
-    end
-    
-    -- Log issues if any
-    if #issues > 0 then
-        print(string.format("[CNR_INTEGRATION] Health check found %d issues:", #issues))
-        for _, issue in ipairs(issues) do
-            print(string.format("[CNR_INTEGRATION] - %s", issue))
-        end
-    end
-end
-
---- Log comprehensive system statistics
-function IntegrationManager.LogSystemStats()
-    print("[CNR_INTEGRATION] === SYSTEM STATISTICS ===")
-    
-    -- Integration status
-    print(string.format("[CNR_INTEGRATION] Initialized: %s, Migration: %s", 
-        tostring(integrationStatus.initialized), 
-        tostring(integrationStatus.migrationComplete)))
-    
-    -- Module status
-    for systemName, loaded in pairs(integrationStatus.modulesLoaded) do
-        print(string.format("[CNR_INTEGRATION] %s: %s", systemName, loaded and "✅" or "❌"))
-    end
-    
-    -- System-specific stats
-    if DataManager then DataManager.LogStats() end
-    if SecureInventory then SecureInventory.LogStats() end
-    if SecureTransactions then SecureTransactions.LogStats() end
-    if PlayerManager then PlayerManager.LogStats() end
-    if PerformanceOptimizer then PerformanceOptimizer.LogStats() end
-    
-    print("[CNR_INTEGRATION] === END STATISTICS ===")
-end
-
---- Log initialization status
-function IntegrationManager.LogInitializationStatus()
-    print("[CNR_INTEGRATION] === INITIALIZATION SUMMARY ===")
-    
-    local totalSystems = 0
-    local loadedSystems = 0
-    
-    for systemName, loaded in pairs(integrationStatus.modulesLoaded) do
-        totalSystems = totalSystems + 1
-        if loaded then loadedSystems = loadedSystems + 1 end
-        
-        print(string.format("[CNR_INTEGRATION] %s: %s", 
-            systemName, loaded and "✅ LOADED" or "❌ FAILED"))
-    end
-    
-    print(string.format("[CNR_INTEGRATION] Systems: %d/%d loaded", loadedSystems, totalSystems))
-    print(string.format("[CNR_INTEGRATION] Migration: %s", 
-        integrationStatus.migrationComplete and "✅ COMPLETE" or "❌ PENDING"))
-    print(string.format("[CNR_INTEGRATION] Status: %s", 
-        integrationStatus.initialized and "✅ READY" or "❌ NOT READY"))
-    
-    print("[CNR_INTEGRATION] === END SUMMARY ===")
-end
-
--- ====================================================================
--- UTILITY FUNCTIONS
--- ====================================================================
-
---- Get integration status
---- @return table Integration status information
-function IntegrationManager.GetStatus()
-    return {
-        initialized = integrationStatus.initialized,
-        migrationComplete = integrationStatus.migrationComplete,
-        modulesLoaded = integrationStatus.modulesLoaded,
-        uptime = GetGameTimer() - integrationStatus.startTime
-    }
-end
-
---- Check if all systems are ready
---- @return boolean Whether all systems are ready
-function IntegrationManager.IsReady()
-    if not integrationStatus.initialized then return false end
-    if not integrationStatus.migrationComplete then return false end
-    
-    for _, loaded in pairs(integrationStatus.modulesLoaded) do
-        if not loaded then return false end
-    end
-    
-    return true
-end
-
--- ====================================================================
--- CLEANUP AND SHUTDOWN
--- ====================================================================
-
---- Cleanup all systems on resource stop
-function IntegrationManager.Cleanup()
-    print("[CNR_INTEGRATION] Starting system cleanup...")
-    
-    -- Cleanup systems in reverse order
-    local cleanupOrder = {
-        "PerformanceOptimizer", "PlayerManager", "SecureTransactions",
-        "SecureInventory", "DataManager", "Validation"
-    }
-    
-    for _, systemName in ipairs(cleanupOrder) do
-        local system = _G[systemName]
-        if system and system.Cleanup then
-            local success, error = pcall(system.Cleanup)
-            if success then
-                print(string.format("[CNR_INTEGRATION] ✅ %s cleaned up", systemName))
-            else
-                print(string.format("[CNR_INTEGRATION] ❌ %s cleanup failed: %s", systemName, tostring(error)))
-            end
-        end
-    end
-    
-    print("[CNR_INTEGRATION] System cleanup completed")
-end
-
--- ====================================================================
--- RESOURCE EVENT HANDLERS
--- ====================================================================
-
---- Handle resource start
-AddEventHandler('onResourceStart', function(resourceName)
-    if GetCurrentResourceName() == resourceName then
-        -- Small delay to ensure all scripts are loaded
-        Citizen.SetTimeout(1000, function()
-            IntegrationManager.Initialize()
-        end)
-    end
-end)
-
---- Handle resource stop
-AddEventHandler('onResourceStop', function(resourceName)
-    if GetCurrentResourceName() == resourceName then
-        IntegrationManager.Cleanup()
-    end
-end)
-
-
->>>>>>> Stashed changes
 
 function shallowcopy(original)
     local copy = {}
@@ -5865,30 +23,6 @@ function tablelength(T)
     return count
 end
 
--- Helper function to get player identifiers safely
-local function GetSafePlayerIdentifiers(playerId)
-    return GetPlayerIdentifiers(playerId)
-end
-
--- Function to check if a player is an admin
-function IsPlayerAdmin(playerId)
-    local playerIdentifiers = GetSafePlayerIdentifiers(playerId)
-    if not playerIdentifiers then return false end
-
-    -- Ensure Config and Config.Admins are loaded and available
-    if not Config or type(Config.Admins) ~= "table" then
-        print("Error: Config.Admins is not loaded or not a table. Ensure config.lua defines it correctly.")
-        return false
-    end
-
-    for _, identifier in ipairs(playerIdentifiers) do
-        -- Check if the player's identifier exists as a key in the Config.Admins table
-        if Config.Admins[identifier] then
-            return true
-        end
-    end
-    return false
-end
 
 
 function MinimizeInventoryForSync(richInventory)
@@ -5920,16 +54,6 @@ local function SafeGetByPlayerId(tbl, playerId)
     return nil
 end
 
--- Safe wrapper for TriggerClientEvent to prevent nil player ID errors
-local function SafeTriggerClientEvent(eventName, playerId, ...)
-    if playerId and type(playerId) == "number" and playerId > 0 and GetPlayerName(playerId) then
-        TriggerClientEvent(eventName, playerId, ...)
-        return true
-    else
-        Log(string.format("SafeTriggerClientEvent: Invalid or offline player ID %s for event %s", tostring(playerId), eventName), "warn")
-        return false
-    end
-end
 
 -- Forward declarations for functions defined later
 local MarkPlayerForInventorySave
@@ -6207,21 +331,21 @@ local function LoadBans()
                     bannedPlayers[identifier] = banInfo
                 end
             end
-            Log("Loaded " .. tablelength(loaded) .. " bans from bans.json")
+            Log("Loaded " .. tablelength(loaded) .. " bans from bans.json", "info", "CNR_SERVER")
         else
-            Log("Failed to decode bans.json: " .. tostring(loaded), "error")
+            Log("Failed to decode bans.json: " .. tostring(loaded), "error", "CNR_SERVER")
         end
     else
-        Log("bans.json not found. Only using bans from Config.BannedPlayers.")
+        Log("bans.json not found. Only using bans from Config.BannedPlayers.", "info", "CNR_SERVER")
     end
 end
 
 local function SaveBans()
     local success = SaveResourceFile(GetCurrentResourceName(), "bans.json", json.encode(bannedPlayers), -1)
     if success then
-        Log("Saved bans to bans.json")
+        Log("Saved bans to bans.json", "info", "CNR_SERVER")
     else
-        Log("Failed to save bans.json", "error")
+        Log("Failed to save bans.json", "error", "CNR_SERVER")
     end
 end
 
@@ -6232,13 +356,13 @@ local function LoadPurchaseHistory()
         local success, loaded = pcall(json.decode, historyFile)
         if success and type(loaded) == "table" then
             purchaseHistory = loaded
-            Log("Loaded purchase history from purchase_history.json. Count: " .. tablelength(purchaseHistory))
+            Log("Loaded purchase history from purchase_history.json. Count: " .. tablelength(purchaseHistory), "info", "CNR_SERVER")
         else
-            Log("Failed to decode purchase_history.json: " .. tostring(loaded), "error")
+            Log("Failed to decode purchase_history.json: " .. tostring(loaded), "error", "CNR_SERVER")
             purchaseHistory = {} -- Start fresh if file is corrupt
         end
     else
-        Log("purchase_history.json not found. Initializing empty history.")
+        Log("purchase_history.json not found. Initializing empty history.", "info", "CNR_SERVER")
         purchaseHistory = {}
     end
 end
@@ -6247,9 +371,9 @@ local function SavePurchaseHistory()
     if not Config.DynamicEconomy or not Config.DynamicEconomy.enabled then return end -- Only save if enabled
     local success = SaveResourceFile(GetCurrentResourceName(), "purchase_history.json", json.encode(purchaseHistory), -1)
     if success then
-        Log("Saved purchase history to purchase_history.json")
+        Log("Saved purchase history to purchase_history.json", "info", "CNR_SERVER")
     else
-        Log("Failed to save purchase_history.json", "error")
+        Log("Failed to save purchase_history.json", "error", "CNR_SERVER")
     end
 end
 
@@ -6291,7 +415,7 @@ local function AddPlayerMoney(playerId, amount, type)
     type = type or 'cash' -- Assuming 'cash' is the primary type. Add handling for 'bank' if needed.
     local pId = tonumber(playerId)
     if not pId or pId <= 0 then
-        Log(string.format("AddPlayerMoney: Invalid player ID %s.", tostring(playerId)), "error")
+        Log(string.format("AddPlayerMoney: Invalid player ID %s.", tostring(playerId)), "error", "CNR_SERVER")
         return false
     end
 
@@ -6299,7 +423,7 @@ local function AddPlayerMoney(playerId, amount, type)
     if pData then
         if type == 'cash' then
             pData.money = (pData.money or 0) + amount
-            Log(string.format("Added %d to player %s's %s account. New balance: %d", amount, playerId, type, pData.money))
+            Log(string.format("Added %d to player %s's %s account. New balance: %d", amount, playerId, type, pData.money), "info", "CNR_SERVER")
             -- Send a notification to the client
             SafeTriggerClientEvent('chat:addMessage', pId, { args = {"^2Money", string.format("You received $%d.", amount)} })
             local pDataForBasicInfo = shallowcopy(pData)
@@ -6308,11 +432,11 @@ local function AddPlayerMoney(playerId, amount, type)
             -- Inventory is not changed by this function, so no need to send cnr:syncInventory
             return true
         else
-            Log(string.format("AddPlayerMoney: Unsupported account type '%s' for player %s.", type, playerId), "warn")
+            Log(string.format("AddPlayerMoney: Unsupported account type '%s' for player %s.", type, playerId), "warn", "CNR_SERVER")
             return false
         end
     else
-        Log(string.format("AddPlayerMoney: Player data not found for %s.", playerId), "error")
+        Log(string.format("AddPlayerMoney: Player data not found for %s.", playerId), "error", "CNR_SERVER")
         return false
     end
 end
@@ -6324,7 +448,7 @@ _G.AddPlayerMoney = AddPlayerMoney
 local function AddPlayerXP(playerId, amount)
     local pId = tonumber(playerId)
     if not pId or pId <= 0 then
-        Log(string.format("AddPlayerXP: Invalid player ID %s.", tostring(playerId)), "error")
+        Log(string.format("AddPlayerXP: Invalid player ID %s.", tostring(playerId)), "error", "CNR_SERVER")
         return false
     end
 
@@ -6354,7 +478,7 @@ local function AddPlayerXP(playerId, amount)
         
         return true
     else
-        Log(string.format("AddPlayerXP: Player data not found for %s.", pId), "error")
+        Log(string.format("AddPlayerXP: Player data not found for %s.", pId), "error", "CNR_SERVER")
         return false
     end
 end
@@ -6366,7 +490,7 @@ local function RemovePlayerMoney(playerId, amount, type)
     type = type or 'cash'
     local pId = tonumber(playerId)
     if not pId or pId <= 0 then
-        Log(string.format("RemovePlayerMoney: Invalid player ID %s.", tostring(playerId)), "error")
+        Log(string.format("RemovePlayerMoney: Invalid player ID %s.", tostring(playerId)), "error", "CNR_SERVER")
         return false
     end
 
@@ -6375,7 +499,7 @@ local function RemovePlayerMoney(playerId, amount, type)
         if type == 'cash' then
             if (pData.money or 0) >= amount then
                 pData.money = pData.money - amount
-                Log(string.format("Removed %d from player %s's %s account. New balance: %d", amount, playerId, type, pData.money))
+                Log(string.format("Removed %d from player %s's %s account. New balance: %d", amount, playerId, type, pData.money), "info", "CNR_SERVER")
                 local pDataForBasicInfo = shallowcopy(pData)
                 pDataForBasicInfo.inventory = nil
                 SafeTriggerClientEvent('cnr:updatePlayerData', pId, pDataForBasicInfo)
@@ -6387,11 +511,11 @@ local function RemovePlayerMoney(playerId, amount, type)
                 return false
             end
         else
-            Log(string.format("RemovePlayerMoney: Unsupported account type '%s' for player %s.", type, playerId), "warn")
+            Log(string.format("RemovePlayerMoney: Unsupported account type '%s' for player %s.", type, playerId), "warn", "CNR_SERVER")
             return false
         end
     else
-        Log(string.format("RemovePlayerMoney: Player data not found for %s.", playerId), "error")
+        Log(string.format("RemovePlayerMoney: Player data not found for %s.", playerId), "error", "CNR_SERVER")
         return false
     end
 end
@@ -6404,17 +528,17 @@ local function IsAdmin(playerId)
     if not identifiers then return false end
 
     if not Config or type(Config.Admins) ~= "table" then
-        Log("IsAdmin Check: Config.Admins is not loaded or not a table.", "error")
+        Log("IsAdmin Check: Config.Admins is not loaded or not a table.", "error", "CNR_SERVER")
         return false -- Should not happen if Config.lua is correct
     end
 
     for _, identifier in ipairs(identifiers) do
         if Config.Admins[identifier] then
-            Log("IsAdmin Check: Player " .. src .. " with identifier " .. identifier .. " IS an admin.", "info")
+            Log("IsAdmin Check: Player " .. src .. " with identifier " .. identifier .. " IS an admin.", "info", "CNR_SERVER")
             return true
         end
     end
-    Log("IsAdmin Check: Player " .. src .. " is NOT an admin.", "info")
+    Log("IsAdmin Check: Player " .. src .. " is NOT an admin.", "info", "CNR_SERVER")
     return false
 end
 
@@ -6445,12 +569,12 @@ local function CalculateDynamicPrice(itemId, basePrice)
     local price = basePrice
     if recentPurchases > (Config.DynamicEconomy.popularityThresholdHigh or 10) then
         price = math.floor(basePrice * (Config.DynamicEconomy.priceIncreaseFactor or 1.2))
-        Log(string.format("DynamicPrice: Item %s popular (%d purchases), price increased to %d from %d", itemId, recentPurchases, price, basePrice))
+        Log(string.format("DynamicPrice: Item %s popular (%d purchases), price increased to %d from %d", itemId, recentPurchases, price, basePrice), "info", "CNR_SERVER")
     elseif recentPurchases < (Config.DynamicEconomy.popularityThresholdLow or 2) then
         price = math.floor(basePrice * (Config.DynamicEconomy.priceDecreaseFactor or 0.8))
-        Log(string.format("DynamicPrice: Item %s unpopular (%d purchases), price decreased to %d from %d", itemId, recentPurchases, price, basePrice))
+        Log(string.format("DynamicPrice: Item %s unpopular (%d purchases), price decreased to %d from %d", itemId, recentPurchases, price, basePrice), "info", "CNR_SERVER")
     else
-        Log(string.format("DynamicPrice: Item %s normal popularity (%d purchases), price remains %d", itemId, recentPurchases, price))
+        Log(string.format("DynamicPrice: Item %s normal popularity (%d purchases), price remains %d", itemId, recentPurchases, price), "info", "CNR_SERVER")
     end
     return price
 end
@@ -6468,7 +592,7 @@ end
 -- Ensure InitializePlayerInventory is defined (even if simple)
 function InitializePlayerInventory(pData, playerId)
     if not pData then
-        Log("InitializePlayerInventory: pData is nil for playerId " .. (playerId or "unknown"), "error")
+        Log("InitializePlayerInventory: pData is nil for playerId " .. (playerId or "unknown"), "error", "CNR_SERVER")
         return
     end
     pData.inventory = pData.inventory or {}
@@ -6479,13 +603,13 @@ LoadPlayerData = function(playerId)
     -- Log(string.format("LoadPlayerData: Called for player ID %s.", playerId), "info")
     local pIdNum = tonumber(playerId)
     if not pIdNum or pIdNum <= 0 then
-        Log(string.format("LoadPlayerData: Invalid player ID %s", tostring(playerId)), "error")
+        Log(string.format("LoadPlayerData: Invalid player ID %s", tostring(playerId)), "error", "CNR_SERVER")
         return
     end
 
     -- Check if player is still online
     if not GetPlayerName(pIdNum) then
-        Log(string.format("LoadPlayerData: Player %s is not online", pIdNum), "warn")
+        Log(string.format("LoadPlayerData: Player %s is not online", pIdNum), "warn", "CNR_SERVER")
         return
     end
 
@@ -6496,7 +620,7 @@ LoadPlayerData = function(playerId)
     if license then
         filename = "player_data/" .. license:gsub(":", "") .. ".json"
     else
-        Log(string.format("LoadPlayerData: CRITICAL - Could not find license for player %s (Name: %s) even after playerConnecting. Attempting PID fallback (pid_%s.json), but this may lead to data inconsistencies or load failures if server IDs are not static.", pIdNum, GetPlayerName(pIdNum) or "N/A", pIdNum), "error")
+        Log(string.format("LoadPlayerData: CRITICAL - Could not find license for player %s (Name: %s) even after playerConnecting. Attempting PID fallback (pid_%s.json), but this may lead to data inconsistencies or load failures if server IDs are not static.", pIdNum, GetPlayerName(pIdNum) or "N/A", pIdNum), "error", "CNR_SERVER")
         -- The playerConnecting handler should ideally prevent this state for legitimate players.
         -- If this occurs, it might be due to:
         -- 1. A non-player entity somehow triggering this (e.g., faulty admin command or event).
@@ -6516,13 +640,13 @@ LoadPlayerData = function(playerId)
         if success and type(data) == "table" then
             playersData[pIdNum] = data
             loadedMoney = data.money or 0 -- Load money from file if exists
-            Log("Loaded player data for " .. pIdNum .. " from " .. filename .. ". Level: " .. (data.level or 0) .. ", Role: " .. (data.role or "citizen") .. ", Money: " .. loadedMoney)
+            Log("Loaded player data for " .. pIdNum .. " from " .. filename .. ". Level: " .. (data.level or 0) .. ", Role: " .. (data.role or "citizen") .. ", Money: " .. loadedMoney, "info", "CNR_SERVER")
         else
-            Log("Failed to decode player data for " .. pIdNum .. " from " .. filename .. ". Using defaults. Error: " .. tostring(data), "error")
+            Log("Failed to decode player data for " .. pIdNum .. " from " .. filename .. ". Using defaults. Error: " .. tostring(data), "error", "CNR_SERVER")
             playersData[pIdNum] = nil -- Force default initialization
         end
     else
-        Log("No save file found for " .. pIdNum .. " at " .. filename .. ". Initializing default data.")
+        Log("No save file found for " .. pIdNum .. " at " .. filename .. ". Initializing default data.", "info", "CNR_SERVER")
         playersData[pIdNum] = nil -- Force default initialization
     end
 
@@ -6543,7 +667,7 @@ if not playersData[pIdNum] then
                 ["ammo_pistol"] = { count = 50, name = "Pistol Ammo", category = "Ammunition" }
             }
         }
-        Log("Initialized default data for player " .. pIdNum .. ". Money: " .. playersData[pIdNum].money .. ", Default inventory added.")
+        Log("Initialized default data for player " .. pIdNum .. ". Money: " .. playersData[pIdNum].money .. ", Default inventory added.", "info", "CNR_SERVER")
     else
         -- Ensure money is set if loaded from file, otherwise use default (already handled by loadedMoney init)
         playersData[pIdNum].money = playersData[pIdNum].money or Config.DefaultStartMoney or 5000
@@ -6552,9 +676,9 @@ if not playersData[pIdNum] then
     -- NEW PLACEMENT FOR isDataLoaded
     if playersData[pIdNum] then
         playersData[pIdNum].isDataLoaded = true
-        Log("LoadPlayerData: Player data structure populated and isDataLoaded set to true for " .. pIdNum .. ".") -- Combined log
+        Log("LoadPlayerData: Player data structure populated and isDataLoaded set to true for " .. pIdNum .. ".", "info", "CNR_SERVER") -- Combined log
     else
-        Log("LoadPlayerData: CRITICAL - playersData[pIdNum] is nil AFTER data load/init attempt for " .. pIdNum .. ". Cannot set isDataLoaded or proceed.", "error")
+        Log("LoadPlayerData: CRITICAL - playersData[pIdNum] is nil AFTER data load/init attempt for " .. pIdNum .. ". Cannot set isDataLoaded or proceed.", "error", "CNR_SERVER")
         return -- Cannot proceed if playersData[pIdNum] is still nil here
     end
 
@@ -6566,7 +690,7 @@ if not playersData[pIdNum] then
     if playersData[pIdNum] then -- Re-check pData as ApplyPerks or SetPlayerRole might have side effects (though unlikely to nil it)
         InitializePlayerInventory(playersData[pIdNum], pIdNum)
     else
-        Log("LoadPlayerData: CRITICAL - playersData[pIdNum] became nil before InitializePlayerInventory for " .. pIdNum, "error")
+        Log("LoadPlayerData: CRITICAL - playersData[pIdNum] became nil before InitializePlayerInventory for " .. pIdNum, "error", "CNR_SERVER")
     end
 
 local pDataForLoad = shallowcopy(playersData[pIdNum])
@@ -6576,7 +700,7 @@ local pDataForLoad = shallowcopy(playersData[pIdNum])
     -- Send config items first so client can properly reconstruct inventory
     if Config and Config.Items and type(Config.Items) == "table" then
         SafeTriggerClientEvent('cnr:receiveConfigItems', pIdNum, Config.Items)
-        Log(string.format("Sent Config.Items to player %s during load", pIdNum), "info")
+        Log(string.format("Sent Config.Items to player %s during load", pIdNum), "info", "CNR_SERVER")
     end
     
     SafeTriggerClientEvent('cnr:syncInventory', pIdNum, MinimizeInventoryForSync(playersData[pIdNum].inventory))
@@ -6598,7 +722,7 @@ local pDataForLoad = shallowcopy(playersData[pIdNum])
             tostring(totalTimeElapsedSinceJailing),
             tostring(calculatedRemainingTime),
             tostring(pData.jailData.remainingTime) -- For comparison logging
-        ), "info")
+        ), "info", "CNR_SERVER")
 
         if calculatedRemainingTime > 0 then
             jail[pIdNum] = {
@@ -6608,14 +732,14 @@ local pDataForLoad = shallowcopy(playersData[pIdNum])
                 arrestingOfficer = pData.jailData.jailedByOfficer or "System (Rejoin)"
             }
             SafeTriggerClientEvent('cnr:sendToJail', pIdNum, calculatedRemainingTime, Config.PrisonLocation)
-            Log(string.format("Player %s re-jailed upon loading data. Calculated Remaining: %ds", pIdNum, calculatedRemainingTime), "info")
+            Log(string.format("Player %s re-jailed upon loading data. Calculated Remaining: %ds", pIdNum, calculatedRemainingTime), "info", "CNR_SERVER")
             SafeTriggerClientEvent('chat:addMessage', pIdNum, { args = {"^1Jail", string.format("You are still jailed. Time remaining: %d seconds.", calculatedRemainingTime)} })
         else
-            Log(string.format("Player %s jail time expired while offline or on load. Original Duration: %ds, Total Elapsed: %ds", pIdNum, pData.jailData.originalDuration, totalTimeElapsedSinceJailing), "info")
+            Log(string.format("Player %s jail time expired while offline or on load. Original Duration: %ds, Total Elapsed: %ds", pIdNum, pData.jailData.originalDuration, totalTimeElapsedSinceJailing), "info", "CNR_SERVER")
             pData.jailData = nil -- Clear expired jail data
         end
     elseif pData and pData.jailData then -- If jailData exists but is incomplete (e.g., missing originalDuration or jailedTimestamp) or remainingTime was already <=0
-        Log(string.format("Player %s had incomplete or already expired jailData. Clearing. Data: %s", pIdNum, json.encode(pData.jailData)), "warn")
+        Log(string.format("Player %s had incomplete or already expired jailData. Clearing. Data: %s", pIdNum, json.encode(pData.jailData)), "warn", "CNR_SERVER")
         pData.jailData = nil -- Clean up old/completed/invalid jail data
     end
     -- Original position of isDataLoaded setting is now removed.
@@ -6625,14 +749,14 @@ SavePlayerData = function(playerId)
     local pIdNum = tonumber(playerId)
     local pData = GetCnrPlayerData(pIdNum)
     if not pData then
-        Log("SavePlayerData: No data for player " .. pIdNum, "warn")
+        Log("SavePlayerData: No data for player " .. pIdNum, "warn", "CNR_SERVER")
         return
     end
 
     local license = GetPlayerLicense(pIdNum) -- Use helper
 
     if not license then
-        Log("SavePlayerData: Could not find license for player " .. pIdNum .. ". Using numeric ID as fallback filename. Data might not persist correctly across sessions if ID changes.", "warn")
+        Log("SavePlayerData: Could not find license for player " .. pIdNum .. ". Using numeric ID as fallback filename. Data might not persist correctly across sessions if ID changes.", "warn", "CNR_SERVER")
         license = "pid_" .. pIdNum -- Fallback, not ideal for persistence if server IDs are not static
     end
 
@@ -6644,22 +768,22 @@ local filename = "player_data/" .. license:gsub(":", "") .. ".json"
     end
     local success = SaveResourceFile(GetCurrentResourceName(), filename, json.encode(pData), -1)
     if success then
-        Log("Saved player data for " .. pIdNum .. " to " .. filename .. ".")
+        Log("Saved player data for " .. pIdNum .. " to " .. filename .. ".", "info", "CNR_SERVER")
     else
-        Log("Failed to save player data for " .. pIdNum .. " to " .. filename .. ".", "error")
+        Log("Failed to save player data for " .. pIdNum .. " to " .. filename .. ".", "error", "CNR_SERVER")
     end
 end
 
 SetPlayerRole = function(playerId, role, skipNotify)
     local pIdNum = tonumber(playerId)
     if not pIdNum or pIdNum <= 0 then
-        Log(string.format("SetPlayerRole: Invalid player ID %s", tostring(playerId)), "error")
+        Log(string.format("SetPlayerRole: Invalid player ID %s", tostring(playerId)), "error", "CNR_SERVER")
         return
     end
 
     -- Check if player is still online
     if not GetPlayerName(pIdNum) then
-        Log(string.format("SetPlayerRole: Player %s is not online", pIdNum), "warn")
+        Log(string.format("SetPlayerRole: Player %s is not online", pIdNum), "warn", "CNR_SERVER")
         return
     end
 
@@ -6668,7 +792,7 @@ SetPlayerRole = function(playerId, role, skipNotify)
 
     local pData = playersData[pIdNum] -- Get pData directly
     if not pData or not pData.isDataLoaded then -- Check both for robustness
-        Log(string.format("SetPlayerRole: Attempted to set role for %s (Name: %s) but data not loaded/ready. Role: %s. pData exists: %s, isDataLoaded: %s. This should have been caught by the caller.", pIdNum, playerName, role, tostring(pData ~= nil), tostring(pData and pData.isDataLoaded)), "warn")
+        Log(string.format("SetPlayerRole: Attempted to set role for %s (Name: %s) but data not loaded/ready. Role: %s. pData exists: %s, isDataLoaded: %s. This should have been caught by the caller.", pIdNum, playerName, role, tostring(pData ~= nil), tostring(pData and pData.isDataLoaded)), "warn", "CNR_SERVER")
         -- Do NOT trigger 'cnr:roleSelected' here, as the caller handles it.
         SafeTriggerClientEvent('chat:addMessage', pIdNum, { args = {"^1Error", "Role change failed: Player data integrity issue."} })
         return
@@ -6689,7 +813,7 @@ SetPlayerRole = function(playerId, role, skipNotify)
             SafeTriggerClientEvent('cnr:wantedLevelSync', pIdNum, wantedPlayers[pIdNum])
             SafeTriggerClientEvent('cops_and_robbers:updateWantedDisplay', pIdNum, 0, 0)
             SafeTriggerClientEvent('cnr:hideWantedNotification', pIdNum)
-            Log(string.format("Cleared wanted level for player %s who switched to cop role", pIdNum), "info")
+            Log(string.format("Cleared wanted level for player %s who switched to cop role", pIdNum), "info", "CNR_SERVER")
             
             -- Notify all cops that this player is no longer wanted
             for copId, _ in pairs(copsOnDuty) do
@@ -6702,7 +826,7 @@ SetPlayerRole = function(playerId, role, skipNotify)
         -- player.Functions.SetJob("leo", 0) -- Placeholder for framework integration
         SafeTriggerClientEvent('cnr:setPlayerRole', pIdNum, "cop")
         if not skipNotify then SafeTriggerClientEvent('chat:addMessage', pIdNum, { args = {"^3Role", "You are now a Cop."} }) end
-        Log("Player " .. pIdNum .. " (" .. playerName .. ") set to Cop role.")
+        Log("Player " .. pIdNum .. " (" .. playerName .. ") set to Cop role.", "info", "CNR_SERVER")
         SafeTriggerClientEvent('cops_and_robbers:bountyListUpdate', pIdNum, activeBounties)
     elseif role == "robber" then
         SafeSetByPlayerId(robbersActive, pIdNum, true)
@@ -6710,14 +834,14 @@ SetPlayerRole = function(playerId, role, skipNotify)
         -- player.Functions.SetJob("unemployed", 0) -- Placeholder for framework integration
         SafeTriggerClientEvent('cnr:setPlayerRole', pIdNum, "robber")
         if not skipNotify then SafeTriggerClientEvent('chat:addMessage', pIdNum, { args = {"^3Role", "You are now a Robber."} }) end
-        Log("Player " .. pIdNum .. " (" .. playerName .. ") set to Robber role.")
+        Log("Player " .. pIdNum .. " (" .. playerName .. ") set to Robber role.", "info", "CNR_SERVER")
     else
         SafeRemoveByPlayerId(copsOnDuty, pIdNum)
         SafeRemoveByPlayerId(robbersActive, pIdNum)
         -- player.Functions.SetJob("unemployed", 0) -- Placeholder for framework integration
         SafeTriggerClientEvent('cnr:setPlayerRole', pIdNum, "citizen")
         if not skipNotify then SafeTriggerClientEvent('chat:addMessage', pIdNum, { args = {"^3Role", "You are now a Citizen."} }) end
-        Log("Player " .. pIdNum .. " (" .. playerName .. ") set to Citizen role.")
+        Log("Player " .. pIdNum .. " (" .. playerName .. ") set to Citizen role.", "info", "CNR_SERVER")
     end
     ApplyPerks(pIdNum, playersData[pIdNum].level, role) -- Re-apply/update perks based on new role
     -- Log(string.format("SetPlayerRole DEBUG: Before TriggerClientEvent cnr:updatePlayerData. pIdNum: %s, Data being sent: %s", pIdNum, json.encode(playersData[pIdNum])), "info")
@@ -6759,13 +883,13 @@ end
 AddXP = function(playerId, amount, type, reason)
     local pIdNum = tonumber(playerId)
     if not pIdNum or pIdNum <= 0 then
-        Log("AddXP: Invalid player ID " .. tostring(playerId), "error")
+        Log("AddXP: Invalid player ID " .. tostring(playerId), "error", "CNR_SERVER")
         return
     end
 
     local pData = GetCnrPlayerData(pIdNum)
     if not pData then
-        Log("AddXP: Player " .. (pIdNum or "unknown") .. " data not init.", "error")
+        Log("AddXP: Player " .. (pIdNum or "unknown") .. " data not init.", "error", "CNR_SERVER")
         return
     end
     
@@ -6786,11 +910,11 @@ AddXP = function(playerId, amount, type, reason)
         pData.level = newLevel
         SafeTriggerClientEvent('chat:addMessage', pIdNum, { args = {"^2Level Up!", string.format("Congratulations! You've reached Level %d!", newLevel)} })
         SafeTriggerClientEvent('cnr:levelUp', pIdNum, newLevel, pData.xp)
-        Log(string.format("Player %s leveled up to %d (XP: %d, Role: %s)", pIdNum, newLevel, pData.xp, pData.role))
+        Log(string.format("Player %s leveled up to %d (XP: %d, Role: %s)", pIdNum, newLevel, pData.xp, pData.role), "info", "CNR_SERVER")
         ApplyPerks(pIdNum, newLevel, pData.role)
     else
         SafeTriggerClientEvent('cnr:xpGained', pIdNum, amount, pData.xp)
-        Log(string.format("Player %s gained %d XP (Total: %d, Role: %s)", pIdNum, amount, pData.xp, pData.role))
+        Log(string.format("Player %s gained %d XP (Total: %d, Role: %s)", pIdNum, amount, pData.xp, pData.role), "info", "CNR_SERVER")
     end
     
     -- Update XP bar display
@@ -6812,7 +936,7 @@ end
 ApplyPerks = function(playerId, level, role)
     local pIdNum = tonumber(playerId)
     if not pIdNum or pIdNum <= 0 then
-        Log("ApplyPerks: Invalid player ID " .. tostring(playerId), "error")
+        Log("ApplyPerks: Invalid player ID " .. tostring(playerId), "error", "CNR_SERVER")
         return
     end
 
@@ -6829,7 +953,7 @@ ApplyPerks = function(playerId, level, role)
     if role and Config.LevelUnlocks and Config.LevelUnlocks[role] then
         unlocks = Config.LevelUnlocks[role]
     else
-        Log(string.format("ApplyPerks: No level unlocks defined for role '%s'. Player %s will have no role-specific level perks.", tostring(role), pIdNum))
+        Log(string.format("ApplyPerks: No level unlocks defined for role '%s'. Player %s will have no role-specific level perks.", tostring(role), pIdNum), "info", "CNR_SERVER")
         -- No need to immediately return, as pData.perks (now empty) and other perk-related values need to be synced.
     end
 
@@ -6841,7 +965,7 @@ ApplyPerks = function(playerId, level, role)
                         -- Only try to set pData.perks if it's actually a perk and perkId is valid
                         if perkDetail.type == "passive_perk" and perkDetail.perkId then
                             pData.perks[perkDetail.perkId] = true
-                            Log(string.format("Player %s unlocked perk: %s at level %d", pIdNum, perkDetail.perkId, levelKey))
+                            Log(string.format("Player %s unlocked perk: %s at level %d", pIdNum, perkDetail.perkId, levelKey), "info", "CNR_SERVER")
                         -- else
                             -- Log for non-passive_perk types if needed for debugging, e.g.:
                             -- if perkDetail.type ~= "passive_perk" then
@@ -6853,21 +977,21 @@ ApplyPerks = function(playerId, level, role)
                         if perkDetail.type == "passive_perk" and perkDetail.perkId then
                             if perkDetail.perkId == "increased_armor_durability" and role == "cop" then
                                 pData.armorModifier = perkDetail.value or Config.PerkEffects.IncreasedArmorDurabilityModifier or 1.25
-                                Log(string.format("Player %s granted increased_armor_durability (modifier: %s).", pIdNum, pData.armorModifier))
+                                Log(string.format("Player %s granted increased_armor_durability (modifier: %s).", pIdNum, pData.armorModifier), "info", "CNR_SERVER")
                             elseif perkDetail.perkId == "extra_spike_strips" and role == "cop" then
                                 pData.extraSpikeStrips = perkDetail.value or 1
-                                Log(string.format("Player %s granted extra_spike_strips (value: %d).", pIdNum, pData.extraSpikeStrips))
+                                Log(string.format("Player %s granted extra_spike_strips (value: %d).", pIdNum, pData.extraSpikeStrips), "info", "CNR_SERVER")
                             elseif perkDetail.perkId == "faster_contraband_collection" and role == "robber" then
                                  pData.contrabandCollectionModifier = perkDetail.value or 0.8
-                                 Log(string.format("Player %s granted faster_contraband_collection (modifier: %s).", pIdNum, pData.contrabandCollectionModifier))
+                                 Log(string.format("Player %s granted faster_contraband_collection (modifier: %s).", pIdNum, pData.contrabandCollectionModifier), "info", "CNR_SERVER")
                             end
                         end
                     else
-                        Log(string.format("ApplyPerks: perkDetail at levelKey %s for role %s is not a table. Skipping.", levelKey, role), "warn")
+                        Log(string.format("ApplyPerks: perkDetail at levelKey %s for role %s is not a table. Skipping.", levelKey, role), "warn", "CNR_SERVER")
                     end
                 end
             else
-                 Log(string.format("ApplyPerks: levelUnlocksTable at levelKey %s for role %s is not a table. Skipping.", levelKey, role), "warn")
+                 Log(string.format("ApplyPerks: levelUnlocksTable at levelKey %s for role %s is not a table. Skipping.", levelKey, role), "warn", "CNR_SERVER")
             end
         end
     end
@@ -6903,7 +1027,7 @@ function CheckAndPlaceBounty(playerId)
         local durationMinutes = Config.BountySettings.durationMinutes
         if durationMinutes and activeBounties and pIdNum then
             activeBounties[pIdNum] = { name = targetName, amount = bountyAmount, issueTimestamp = os.time(), lastIncreasedTimestamp = os.time(), expiresAt = os.time() + (durationMinutes * 60) }
-            Log(string.format("Bounty of $%d placed on %s (ID: %d) for reaching %d stars.", bountyAmount, targetName, pIdNum, wantedData.stars))
+            Log(string.format("Bounty of $%d placed on %s (ID: %d) for reaching %d stars.", bountyAmount, targetName, pIdNum, wantedData.stars), "info", "CNR_SERVER")
             TriggerClientEvent('cops_and_robbers:bountyListUpdate', -1, activeBounties)
             TriggerClientEvent('chat:addMessage', -1, { args = {"^1[BOUNTY PLACED]", string.format("A bounty of $%d has been placed on %s!", bountyAmount, targetName)} })
         end
@@ -6926,13 +1050,14 @@ CreateThread(function() -- Bounty Increase & Expiry Loop
                 if bountyData.amount < Config.BountySettings.maxBounty then
                     bountyData.amount = math.min(bountyData.amount + Config.BountySettings.increasePerMinute, Config.BountySettings.maxBounty)
                     bountyData.lastIncreasedTimestamp = currentTime
-                    Log(string.format("Bounty for %s (ID: %d) increased to $%d.", bountyData.name, playerId, bountyData.amount))
+                    Log(string.format("Bounty for %s (ID: %d) increased to $%d.", bountyData.name, playerId, bountyData.amount), "info", "CNR_SERVER")
                     bountyUpdatedThisCycle = true
                 end
             elseif currentTime >= bountyData.expiresAt or (isPlayerOnline and pData and wantedData and wantedData.stars < Config.BountySettings.wantedLevelThreshold) then
                 local bountyAmount = bountyData.amount or 0
                 local bountyName = bountyData.name or "Unknown"
-                local starCount = (wantedData and wantedData.stars) or "N/A"                Log(string.format("Bounty of $%d expired/removed for %s (ID: %s). Player online: %s, Stars: %s", bountyAmount, bountyName, tostring(playerId), tostring(isPlayerOnline), tostring(starCount)))
+                local starCount = (wantedData and wantedData.stars) or "N/A"
+                Log(string.format("Bounty of $%d expired/removed for %s (ID: %s). Player online: %s, Stars: %s", bountyAmount, bountyName, tostring(playerId), tostring(isPlayerOnline), tostring(starCount)), "info", "CNR_SERVER")
                 if activeBounties and playerId then
                     activeBounties[playerId] = nil
                 end
@@ -6987,7 +1112,7 @@ end)
 UpdatePlayerWantedLevel = function(playerId, crimeKey, officerId)
     local pIdNum = tonumber(playerId)
     if not pIdNum or pIdNum <= 0 then
-        Log("UpdatePlayerWantedLevel: Invalid player ID " .. tostring(playerId), "error")
+        Log("UpdatePlayerWantedLevel: Invalid player ID " .. tostring(playerId), "error", "CNR_SERVER")
         return
     end
 
@@ -6995,7 +1120,7 @@ UpdatePlayerWantedLevel = function(playerId, crimeKey, officerId)
 
     local crimeConfig = Config.WantedSettings.crimes[crimeKey]
     if not crimeConfig then
-        Log("UpdatePlayerWantedLevel: Unknown crimeKey: " .. crimeKey, "error")
+        Log("UpdatePlayerWantedLevel: Unknown crimeKey: " .. crimeKey, "error", "CNR_SERVER")
         return
     end
 
@@ -7029,7 +1154,7 @@ UpdatePlayerWantedLevel = function(playerId, crimeKey, officerId)
 currentWanted.stars = newStars
     -- Reduced logging: Only log on significant changes to reduce spam
     if newStars ~= (currentWanted.previousStars or 0) then
-        Log(string.format("Player %s committed crime '%s'. Points: %s. Wanted Lvl: %d, Stars: %d", pIdNum, crimeKey, pointsToAdd, currentWanted.wantedLevel, newStars))
+        Log(string.format("Player %s committed crime '%s'. Points: %s. Wanted Lvl: %d, Stars: %d", pIdNum, crimeKey, pointsToAdd, currentWanted.wantedLevel, newStars), "info", "CNR_SERVER")
         currentWanted.previousStars = newStars
     end
 
@@ -7060,13 +1185,13 @@ SafeTriggerClientEvent('cnr:wantedLevelSync', pIdNum, currentWanted) -- Syncs wa
         -- NPC Police Response Logic (now explicitly server-triggered and configurable)
         if Config.WantedSettings.enableNPCResponse then
             if robberCoords then -- Ensure robberCoords is not nil before logging its components
-                Log(string.format("UpdatePlayerWantedLevel: NPC Response ENABLED. Triggering cops_and_robbers:wantedLevelResponseUpdate for player %s (%d stars) at Coords: X:%.2f, Y:%.2f, Z:%.2f", pIdNum, newStars, robberCoords.x, robberCoords.y, robberCoords.z), "info")
+                Log(string.format("UpdatePlayerWantedLevel: NPC Response ENABLED. Triggering cops_and_robbers:wantedLevelResponseUpdate for player %s (%d stars) at Coords: X:%.2f, Y:%.2f, Z:%.2f", pIdNum, newStars, robberCoords.x, robberCoords.y, robberCoords.z), "info", "CNR_SERVER")
             else
-                Log(string.format("UpdatePlayerWantedLevel: NPC Response ENABLED for player %s (%d stars), but robberCoords are nil. Event will still be triggered.", pIdNum, newStars), "warn")
+                Log(string.format("UpdatePlayerWantedLevel: NPC Response ENABLED for player %s (%d stars), but robberCoords are nil. Event will still be triggered.", pIdNum, newStars), "warn", "CNR_SERVER")
             end
             SafeTriggerClientEvent('cops_and_robbers:wantedLevelResponseUpdate', pIdNum, pIdNum, newStars, currentWanted.wantedLevel, robberCoords)
         else
-            Log(string.format("UpdatePlayerWantedLevel: NPC Response DISABLED via Config.WantedSettings.enableNPCResponse for player %s (%d stars). Not triggering event.", pIdNum, newStars), "info")
+            Log(string.format("UpdatePlayerWantedLevel: NPC Response DISABLED via Config.WantedSettings.enableNPCResponse for player %s (%d stars). Not triggering event.", pIdNum, newStars), "info", "CNR_SERVER")
         end
 
         -- Alert Human Cops (existing logic)
@@ -7087,7 +1212,7 @@ end
 ReduceWantedLevel = function(playerId, amount)
     local pIdNum = tonumber(playerId)
     if not pIdNum or pIdNum <= 0 then
-        Log("ReduceWantedLevel: Invalid player ID " .. tostring(playerId), "error")
+        Log("ReduceWantedLevel: Invalid player ID " .. tostring(playerId), "error", "CNR_SERVER")
         return
     end
 
@@ -7105,7 +1230,7 @@ ReduceWantedLevel = function(playerId, amount)
         wantedPlayers[pIdNum].stars = newStars
         SafeTriggerClientEvent('cnr:wantedLevelSync', pIdNum, wantedPlayers[pIdNum])
         SafeTriggerClientEvent('cops_and_robbers:updateWantedDisplay', pIdNum, newStars, wantedPlayers[pIdNum].wantedLevel)
-        Log(string.format("Reduced wanted for %s. New Lvl: %d, Stars: %d", pIdNum, wantedPlayers[pIdNum].wantedLevel, newStars))
+        Log(string.format("Reduced wanted for %s. New Lvl: %d, Stars: %d", pIdNum, wantedPlayers[pIdNum].wantedLevel, newStars), "info", "CNR_SERVER")
         if wantedPlayers[pIdNum].wantedLevel == 0 then
             SafeTriggerClientEvent('cnr:hideWantedNotification', pIdNum)
             SafeTriggerClientEvent('chat:addMessage', pIdNum, { args = {"^2Wanted", "You are no longer wanted."} })
@@ -7174,7 +1299,7 @@ CreateThread(function() -- Wanted level decay with cop sight detection
             elseif not IsPlayerRobber(playerId) then
                 -- Player switched to cop, clear their wanted level immediately
                 wantedPlayers[playerIdStr] = nil
-                Log(string.format("Cleared wanted level for player %s who switched from robber to cop", playerId), "info")
+                Log(string.format("Cleared wanted level for player %s who switched from robber to cop", playerId), "info", "CNR_SERVER")
             end
         end
     end
@@ -7233,7 +1358,7 @@ CreateThread(function()
                                 -- Player has been speeding for more than 5 seconds and cooldown period has passed
                                 speedData.lastSpeedingViolation = currentTime
                                 UpdatePlayerWantedLevel(playerId, "speeding")
-                                Log(string.format("Player %s caught speeding at %.1f mph (limit: %.1f mph)", playerId, speed, speedLimit), "info")
+                                Log(string.format("Player %s caught speeding at %.1f mph (limit: %.1f mph)", playerId, speed, speedLimit), "info", "CNR_SERVER")
                             end
                         else
                             -- Player is no longer speeding or in exempt vehicle
@@ -7248,7 +1373,7 @@ CreateThread(function()
                                 if (currentTime - vehicleData.lastCollisionCheck) > 3 then -- Cooldown to prevent spam
                                     vehicleData.lastCollisionCheck = currentTime
                                     UpdatePlayerWantedLevel(playerId, "hit_and_run")
-                                    Log(string.format("Player %s involved in hit and run (vehicle damage detected)", playerId), "info")
+                                    Log(string.format("Player %s involved in hit and run (vehicle damage detected)", playerId), "info", "CNR_SERVER")
                                 end
                             end
                             vehicleData.lastVehicleHealth = currentHealth
@@ -7282,7 +1407,7 @@ AddEventHandler('cnr:weaponFired', function(weaponHash, coords)
     
     -- Add wanted level for weapons discharge
     UpdatePlayerWantedLevel(src, "weapons_discharge")
-    Log(string.format("Player %s fired weapon (Hash: %s) - wanted level increased", src, weaponHash), "info")
+    Log(string.format("Player %s fired weapon (Hash: %s) - wanted level increased", src, weaponHash), "info", "CNR_SERVER")
 end)
 
 -- Server-side restricted area monitoring for robbers
@@ -7326,7 +1451,7 @@ CreateThread(function()
                                         -- Add wanted points if configured
                                         if area.wantedPoints and area.wantedPoints > 0 then
                                             UpdatePlayerWantedLevel(playerId, "restricted_area_entry")
-                                            Log(string.format("Player %s entered restricted area: %s - wanted level increased", playerId, areaKey), "info")
+                                            Log(string.format("Player %s entered restricted area: %s - wanted level increased", playerId, areaKey), "info", "CNR_SERVER")
                                         end
                                     end
                                 end
@@ -7358,19 +1483,19 @@ AddEventHandler('cnr:playerDamaged', function(targetPlayerId, damage, weaponHash
         -- Murder
         if targetData.role == "cop" then
             UpdatePlayerWantedLevel(src, "murder_cop")
-            Log(string.format("Player %s murdered cop %s - high wanted level increase", src, targetPlayerId), "warn")
+            Log(string.format("Player %s murdered cop %s - high wanted level increase", src, targetPlayerId), "warn", "CNR_SERVER")
         else
             UpdatePlayerWantedLevel(src, "murder_civilian")
-            Log(string.format("Player %s murdered civilian %s - wanted level increased", src, targetPlayerId), "info")
+            Log(string.format("Player %s murdered civilian %s - wanted level increased", src, targetPlayerId), "info", "CNR_SERVER")
         end
     else
         -- Assault
         if targetData.role == "cop" then
             UpdatePlayerWantedLevel(src, "assault_cop")
-            Log(string.format("Player %s assaulted cop %s - wanted level increased", src, targetPlayerId), "info")
+            Log(string.format("Player %s assaulted cop %s - wanted level increased", src, targetPlayerId), "info", "CNR_SERVER")
         else
             UpdatePlayerWantedLevel(src, "assault_civilian")
-            Log(string.format("Player %s assaulted civilian %s - wanted level increased", src, targetPlayerId), "info")
+            Log(string.format("Player %s assaulted civilian %s - wanted level increased", src, targetPlayerId), "info", "CNR_SERVER")
         end
     end
 end)
@@ -7454,7 +1579,7 @@ RegisterCommand('reportcrime', function(source, args, rawCommand)
     SafeTriggerClientEvent('chat:addMessage', src, { args = {"^2Crime Reported", string.format("You reported %s (ID: %d) for %s", targetName, targetId, crimeKey)} })
     SafeTriggerClientEvent('chat:addMessage', targetId, { args = {"^1Crime Reported", string.format("Officer %s reported you for %s", copName, crimeKey)} })
     
-    Log(string.format("Officer %s (ID: %d) reported %s (ID: %d) for crime: %s", copName, src, targetName, targetId, crimeKey), "info")
+    Log(string.format("Officer %s (ID: %d) reported %s (ID: %d) for crime: %s", copName, src, targetName, targetId, crimeKey), "info", "CNR_SERVER")
 end, false)
 
 -- =================================================================================================
@@ -7475,12 +1600,12 @@ local function CalculateJailTermFromStars(stars)
             end
         end
     else
-        Log("CalculateJailTermFromStars: Config.WantedSettings.levels not found. Using default punishments.", "warn")
+        Log("CalculateJailTermFromStars: Config.WantedSettings.levels not found. Using default punishments.", "warn", "CNR_SERVER")
     end
 
     if maxPunishment < minPunishment then -- Sanity check
         maxPunishment = minPunishment
-        Log("CalculateJailTermFromStars: maxPunishment was less than minPunishment. Adjusted. Stars: " .. stars, "warn")
+        Log("CalculateJailTermFromStars: maxPunishment was less than minPunishment. Adjusted. Stars: " .. stars, "warn", "CNR_SERVER")
     end
 
     return math.random(minPunishment, maxPunishment)
@@ -7489,7 +1614,7 @@ end
 SendToJail = function(playerId, durationSeconds, arrestingOfficerId, arrestOptions)
     local pIdNum = tonumber(playerId)
     if not pIdNum or pIdNum <= 0 then
-        Log("SendToJail: Invalid player ID " .. tostring(playerId), "error")
+        Log("SendToJail: Invalid player ID " .. tostring(playerId), "error", "CNR_SERVER")
         return
     end
 
@@ -7509,7 +1634,7 @@ SendToJail = function(playerId, durationSeconds, arrestingOfficerId, arrestOptio
     local finalDurationSeconds = durationSeconds
     if not finalDurationSeconds or finalDurationSeconds <= 0 then
         finalDurationSeconds = CalculateJailTermFromStars(originalWantedData.stars)
-        Log(string.format("SendToJail: Calculated jail term for player %s (%d stars) as %d seconds.", pIdNum, originalWantedData.stars, finalDurationSeconds), "info")
+        Log(string.format("SendToJail: Calculated jail term for player %s (%d stars) as %d seconds.", pIdNum, originalWantedData.stars, finalDurationSeconds), "info", "CNR_SERVER")
     end
 
     jail[pIdNum] = { startTime = os.time(), duration = finalDurationSeconds, remainingTime = finalDurationSeconds, arrestingOfficer = arrestingOfficerId }
@@ -7517,7 +1642,7 @@ SendToJail = function(playerId, durationSeconds, arrestingOfficerId, arrestOptio
     SafeTriggerClientEvent('cnr:wantedLevelSync', pIdNum, wantedPlayers[pIdNum])
     SafeTriggerClientEvent('cnr:sendToJail', pIdNum, finalDurationSeconds, Config.PrisonLocation)
     SafeTriggerClientEvent('chat:addMessage', pIdNum, { args = {"^1Jail", string.format("You have been jailed for %d seconds.", finalDurationSeconds)} })
-    Log(string.format("Player %s jailed for %ds. Officer: %s. Options: %s", pIdNum, finalDurationSeconds, arrestingOfficerId or "N/A", json.encode(arrestOptions)))
+    Log(string.format("Player %s jailed for %ds. Officer: %s. Options: %s", pIdNum, finalDurationSeconds, arrestingOfficerId or "N/A", json.encode(arrestOptions)), "info", "CNR_SERVER")
 
     -- Persist jail information in player data
     local pData = GetCnrPlayerData(pIdNum)
@@ -7544,7 +1669,7 @@ SendToJail = function(playerId, durationSeconds, arrestingOfficerId, arrestOptio
     if arrestingOfficerId and IsPlayerCop(arrestingOfficerId) then
         local officerIdNum = tonumber(arrestingOfficerId)
         if not officerIdNum or officerIdNum <= 0 then
-            Log("SendToJail: Invalid arresting officer ID " .. tostring(arrestingOfficerId), "warn")
+            Log("SendToJail: Invalid arresting officer ID " .. tostring(arrestingOfficerId), "warn", "CNR_SERVER")
             return
         end
 
@@ -7565,7 +1690,7 @@ SendToJail = function(playerId, durationSeconds, arrestingOfficerId, arrestOptio
             local k9BonusXP = Config.XPActionsCop.k9_assist_arrest or 10 -- Corrected XP value
             AddXP(officerIdNum, k9BonusXP, "cop")
             SafeTriggerClientEvent('chat:addMessage', officerIdNum, { args = {"^2XP", string.format("+%d XP K9 Assist!", k9BonusXP)} })
-            Log(string.format("Cop %s K9 assist XP %d for robber %s.", officerIdNum, k9BonusXP, pIdNum))
+            Log(string.format("Cop %s K9 assist XP %d for robber %s.", officerIdNum, k9BonusXP, pIdNum), "info", "CNR_SERVER")
             k9Engagements[pIdNum] = nil -- Clear engagement after awarding
         end
 
@@ -7574,13 +1699,13 @@ SendToJail = function(playerId, durationSeconds, arrestingOfficerId, arrestOptio
             local subdueBonusXP = Config.XPActionsCop.subdue_arrest_bonus or 10
             AddXP(officerIdNum, subdueBonusXP, "cop")
             SafeTriggerClientEvent('chat:addMessage', officerIdNum, { args = {"^2XP", string.format("+%d XP for Subdue Arrest!", subdueBonusXP)} })
-            Log(string.format("Cop %s Subdue Arrest XP %d for robber %s.", officerIdNum, subdueBonusXP, pIdNum))
+            Log(string.format("Cop %s Subdue Arrest XP %d for robber %s.", officerIdNum, subdueBonusXP, pIdNum), "info", "CNR_SERVER")
         end
         if Config.BountySettings.enabled and Config.BountySettings.claimMethod == "arrest" and activeBounties[pIdNum] then
             local bountyInfo = activeBounties[pIdNum]
             local bountyAmt = bountyInfo.amount
             AddPlayerMoney(officerIdNum, bountyAmt)
-            Log(string.format("Cop %s claimed $%d bounty on %s.", officerIdNum, bountyAmt, bountyInfo.name))
+            Log(string.format("Cop %s claimed $%d bounty on %s.", officerIdNum, bountyAmt, bountyInfo.name), "info", "CNR_SERVER")
             local officerNameForBounty = GetPlayerName(officerIdNum) or "An officer"
             TriggerClientEvent('chat:addMessage', -1, { args = {"^1[BOUNTY CLAIMED]", string.format("%s claimed $%d bounty on %s!", officerNameForBounty, bountyAmt, bountyInfo.name)} })
             activeBounties[pIdNum] = nil
@@ -7599,7 +1724,7 @@ end
 ForceReleasePlayerFromJail = function(playerId, reason)
     local pIdNum = tonumber(playerId)
     if not pIdNum or pIdNum <= 0 then
-        Log(string.format("ForceReleasePlayerFromJail: Invalid player ID '%s'.", tostring(playerId)), "error")
+        Log(string.format("ForceReleasePlayerFromJail: Invalid player ID '%s'.", tostring(playerId)), "error", "CNR_SERVER")
         return false
     end
 
@@ -7607,44 +1732,44 @@ ForceReleasePlayerFromJail = function(playerId, reason)
     local playerIsOnline = GetPlayerName(pIdNum) ~= nil
 
     -- Log the attempt
-    Log(string.format("Attempting to release player %s from jail. Reason: %s. Online: %s", pIdNum, reason, tostring(playerIsOnline)), "info")
+    Log(string.format("Attempting to release player %s from jail. Reason: %s. Online: %s", pIdNum, reason, tostring(playerIsOnline)), "info", "CNR_SERVER")
 
     -- Clear live jail data from the `jail` table
     if jail[pIdNum] then
         jail[pIdNum] = nil
-        Log(string.format("Player %s removed from live jail tracking.", pIdNum), "info")
+        Log(string.format("Player %s removed from live jail tracking.", pIdNum), "info", "CNR_SERVER")
     else
-        Log(string.format("Player %s was not in live jail tracking. Proceeding to check persisted data.", pIdNum), "info")
+        Log(string.format("Player %s was not in live jail tracking. Proceeding to check persisted data.", pIdNum), "info", "CNR_SERVER")
     end
 
     -- Clear persisted jail data from `playersData`
     local pData = GetCnrPlayerData(pIdNum)
     if pData and pData.jailData then
         pData.jailData = nil
-        Log(string.format("Cleared persisted jail data for player %s.", pIdNum), "info")
+        Log(string.format("Cleared persisted jail data for player %s.", pIdNum), "info", "CNR_SERVER")
         -- Mark for save. If player is online, normal save mechanisms will pick it up.
         -- If offline, this save might only happen if SavePlayerData can handle it or on next login.
         MarkPlayerForInventorySave(pIdNum) -- This marks pData for saving
     else
-        Log(string.format("No persisted jail data found for player %s to clear.", pIdNum), "info")
+        Log(string.format("No persisted jail data found for player %s to clear.", pIdNum), "info", "CNR_SERVER")
     end
 
     if playerIsOnline then
         SafeTriggerClientEvent('cnr:releaseFromJail', pIdNum)
         SafeTriggerClientEvent('chat:addMessage', pIdNum, { args = {"^2Jail", "You have been released. (" .. reason .. ")"} })
-        Log(string.format("Player %s (online) released. Client notified.", pIdNum), "info")
+        Log(string.format("Player %s (online) released. Client notified.", pIdNum), "info", "CNR_SERVER")
     else
         -- If player is offline, their data (now without jailData) will be saved by MarkPlayerForInventorySave
         -- if the periodic saver picks them up or if SavePlayerData is called by another process for offline players.
         -- Otherwise, it's saved on their next disconnect (if they were online briefly) or handled by LoadPlayerData on next join.
-        Log(string.format("Player %s (offline) jail data cleared. They will be free on next login.", pIdNum), "info")
+        Log(string.format("Player %s (offline) jail data cleared. They will be free on next login.", pIdNum), "info", "CNR_SERVER")
         -- Persist the updated data immediately so they won't be jailed again on reconnect
         local saveSuccess = SavePlayerDataImmediate(pIdNum, "unjail_offline")
         if not saveSuccess then
-            Log(string.format("Failed to save data for player %s after unjailing. Retrying...", pIdNum), "error")
+            Log(string.format("Failed to save data for player %s after unjailing. Retrying...", pIdNum), "error", "CNR_SERVER")
             saveSuccess = SavePlayerDataImmediate(pIdNum, "unjail_offline")
             if not saveSuccess then
-                Log(string.format("Retry failed: Could not save data for player %s after unjailing. Manual intervention may be required.", pIdNum), "error")
+                Log(string.format("Retry failed: Could not save data for player %s after unjailing. Manual intervention may be required.", pIdNum), "error", "CNR_SERVER")
             end
         end
     end
@@ -7671,11 +1796,11 @@ CreateThread(function() -- Jail time update loop
                     -- or if they were added to 'jail' while offline (which shouldn't happen with current logic).
                     -- LoadPlayerData should handle their actual status on rejoin based on persisted pData.jailData.
                     -- So, we can remove them from the live 'jail' table here to keep it clean.
-                    Log(string.format("Player %s found in 'jail' table but is offline. Removing from live tracking. Persisted data will determine status on rejoin.", pIdNum), "warn")
+                    Log(string.format("Player %s found in 'jail' table but is offline. Removing from live tracking. Persisted data will determine status on rejoin.", pIdNum), "warn", "CNR_SERVER")
                     jail[pIdNum] = nil
                 end
             else
-                 Log(string.format("Invalid player ID key '%s' found in jail table.", tostring(playerIdKey)), "error")
+                 Log(string.format("Invalid player ID key '%s' found in jail table.", tostring(playerIdKey)), "error", "CNR_SERVER")
                  jail[playerIdKey] = nil -- Remove invalid entry
             end
         end
@@ -7691,7 +1816,7 @@ AddEventHandler('cnr:selectRole', function(selectedRole)
 
     -- Check if player data is loaded
     if not pData or not pData.isDataLoaded then
-        Log(string.format("cnr:selectRole: Player data not ready for %s. pData exists: %s, isDataLoaded: %s", pIdNum, tostring(pData ~= nil), tostring(pData and pData.isDataLoaded or false)), "warn")
+        Log(string.format("cnr:selectRole: Player data not ready for %s. pData exists: %s, isDataLoaded: %s", pIdNum, tostring(pData ~= nil), tostring(pData and pData.isDataLoaded or false)), "warn", "CNR_SERVER")
         TriggerClientEvent('cnr:roleSelected', src, false, "Player data is not ready. Please wait a moment and try again.")
         return
     end    -- No need for the old `if not pData then` check as the above condition covers it.
@@ -7724,9 +1849,9 @@ AddEventHandler('cnr:selectRole', function(selectedRole)
 
     if spawnLocation then
         TriggerClientEvent('cnr:spawnPlayerAt', src, spawnLocation, spawnHeading, selectedRole)
-        Log(string.format("Player %s spawned as %s at %s", GetPlayerName(src), selectedRole, tostring(spawnLocation)))
+        Log(string.format("Player %s spawned as %s at %s", GetPlayerName(src), selectedRole, tostring(spawnLocation)), "info", "CNR_SERVER")
     else
-        Log(string.format("No spawn point found for role %s for player %s", selectedRole, src), "warn")
+        Log(string.format("No spawn point found for role %s for player %s", selectedRole, src), "warn", "CNR_SERVER")
         TriggerClientEvent('cnr:roleSelected', src, false, "No spawn point configured for this role.")
         return
     end
@@ -8072,10 +2197,10 @@ local function SavePlayerDataImmediate(playerId, reason)
     local success = SavePlayerData(pIdNum)
     if success then
         playersSavePending[pIdNum] = nil -- Clear pending save flag
-        Log(string.format("Immediate save completed for player %s (reason: %s)", pIdNum, reason))
+        Log(string.format("Immediate save completed for player %s (reason: %s)", pIdNum, reason), "info", "CNR_SERVER")
         return true
     else
-        Log(string.format("Failed immediate save for player %s (reason: %s)", pIdNum, reason), "error")
+        Log(string.format("Failed immediate save for player %s (reason: %s)", pIdNum, reason), "error", "CNR_SERVER")
         return false
     end
 end
@@ -8104,7 +2229,7 @@ end)
 -- REFACTORED: Player connection handler using new PlayerManager system
 AddEventHandler('playerConnecting', function(name, setKickReason, deferrals)
     local src = source
-    Log(string.format("Player connecting: %s (ID: %s)", name, src))
+    Log(string.format("Player connecting: %s (ID: %s)", name, src), "info", "CNR_SERVER")
 
     -- Check for bans using improved validation
     local identifiers = GetPlayerIdentifiers(src)
@@ -8116,7 +2241,7 @@ AddEventHandler('playerConnecting', function(name, setKickReason, deferrals)
                     banInfo.reason or "No reason provided")
                 setKickReason(banMessage)
                 Log(string.format("Blocked banned player %s (%s) - Reason: %s", 
-                    name, identifier, banInfo.reason or "No reason"), "warn")
+                    name, identifier, banInfo.reason or "No reason"), "warn", "CNR_SERVER")
                 return
             end
         end
@@ -8127,7 +2252,7 @@ AddEventHandler('playerConnecting', function(name, setKickReason, deferrals)
         Citizen.Wait(Constants.TIME_MS.SECOND * 2) -- Wait for player to fully connect
         if Config and Config.Items then
             TriggerClientEvent(Constants.EVENTS.SERVER_TO_CLIENT.RECEIVE_CONFIG_ITEMS, src, Config.Items)
-            Log(string.format("Sent Config.Items to connecting player %s", src))
+            Log(string.format("Sent Config.Items to connecting player %s", src), "info", "CNR_SERVER")
         end
     end)
 end)
@@ -8137,7 +2262,7 @@ AddEventHandler('playerDropped', function(reason)
     local src = source
     local playerName = GetPlayerName(src) or "Unknown"
 
-    Log(string.format("Player %s (ID: %s) disconnected. Reason: %s", playerName, src, reason))
+    Log(string.format("Player %s (ID: %s) disconnected. Reason: %s", playerName, src, reason), "info", "CNR_SERVER")
 
     -- Use PlayerManager for proper cleanup and saving
     PlayerManager.OnPlayerDisconnected(src, reason)
@@ -8253,7 +2378,7 @@ end)
 RegisterNetEvent('cnr:playerRespawned')
 AddEventHandler('cnr:playerRespawned', function()
     local src = source
-    Log(string.format("Player %s respawned, restoring inventory", src))
+    Log(string.format("Player %s respawned, restoring inventory", src), "info", "CNR_SERVER")
 
     -- Reload and sync player inventory
     local pData = GetCnrPlayerData(src)
@@ -8265,9 +2390,9 @@ AddEventHandler('cnr:playerRespawned', function()
         
         -- Send fresh inventory sync
         SafeTriggerClientEvent('cnr:syncInventory', src, MinimizeInventoryForSync(pData.inventory))
-        Log(string.format("Restored inventory for respawned player %s with %d items", src, tablelength(pData.inventory or {})))
+        Log(string.format("Restored inventory for respawned player %s with %d items", src, tablelength(pData.inventory or {})), "info", "CNR_SERVER")
     else
-        Log(string.format("No inventory to restore for player %s", src), "warn")
+        Log(string.format("No inventory to restore for player %s", src), "warn", "CNR_SERVER")
     end
 end)
 
@@ -8275,7 +2400,7 @@ end)
 RegisterNetEvent('cnr:playerSpawned')
 AddEventHandler('cnr:playerSpawned', function()
     local src = source
-    Log(string.format("Player %s spawned, initializing with PlayerManager", src))
+    Log(string.format("Player %s spawned, initializing with PlayerManager", src), "info", "CNR_SERVER")
 
     -- Use PlayerManager for proper initialization
     PlayerManager.OnPlayerConnected(src)
@@ -8288,7 +2413,7 @@ AddEventHandler('cnr:playerSpawned', function()
         -- Sync player data to client using PlayerManager
         PlayerManager.SyncPlayerDataToClient(src)
         
-        Log(string.format("Player %s initialization and sync completed", src))
+        Log(string.format("Player %s initialization and sync completed", src), "info", "CNR_SERVER")
     end)
 end)
 
@@ -8308,7 +2433,7 @@ function AddItemToPlayerInventory(playerId, itemId, quantity, itemDetails)
             end
         end
         if not foundConfigItem then
-            Log(string.format("AddItemToPlayerInventory: CRITICAL - Item details not found in Config.Items for itemId '%s' and not passed correctly. Cannot add to inventory for player %s.", itemId, playerId), "error")
+            Log(string.format("AddItemToPlayerInventory: CRITICAL - Item details not found in Config.Items for itemId '%s' and not passed correctly. Cannot add to inventory for player %s.", itemId, playerId), "error", "CNR_SERVER")
             return false, "Item configuration not found"
         end
         itemDetails = foundConfigItem
@@ -8335,7 +2460,7 @@ function AddItemToPlayerInventory(playerId, itemId, quantity, itemDetails)
     pDataForBasicInfo.inventory = nil
     TriggerClientEvent('cnr:updatePlayerData', playerId, pDataForBasicInfo)
     TriggerClientEvent('cnr:syncInventory', playerId, MinimizeInventoryForSync(pData.inventory)) -- Send MINIMAL inventory separately
-    Log(string.format("Added/updated %d of %s to player %s inventory. New count: %d. Name: %s, Category: %s", quantity, itemId, playerId, newCount, itemDetails.name, itemDetails.category))
+    Log(string.format("Added/updated %d of %s to player %s inventory. New count: %d. Name: %s, Category: %s", quantity, itemId, playerId, newCount, itemDetails.name, itemDetails.category), "info", "CNR_SERVER")
     return true, "Item added/updated"
 end
 
@@ -8641,7 +2766,7 @@ RegisterCommand('set_level', function(source, args, rawCommand)
     end
 end, false)
 
-Log("Enhanced Progression System integration loaded", "info")
+Log("Enhanced Progression System integration loaded", "info", "CNR_SERVER")
 
 function RemoveItemFromPlayerInventory(playerId, itemId, quantity)
     local pData = GetCnrPlayerData(playerId)
@@ -8662,7 +2787,7 @@ function RemoveItemFromPlayerInventory(playerId, itemId, quantity)
     pDataForBasicInfo.inventory = nil
     TriggerClientEvent('cnr:updatePlayerData', playerId, pDataForBasicInfo)
     TriggerClientEvent('cnr:syncInventory', playerId, MinimizeInventoryForSync(pData.inventory)) -- Send MINIMAL inventory separately
-    Log(string.format("Removed %d of %s from player %s inventory.", quantity, itemId, playerId))
+    Log(string.format("Removed %d of %s from player %s inventory.", quantity, itemId, playerId), "info", "CNR_SERVER")
     return true, "Item removed"
 end
 
@@ -8670,7 +2795,7 @@ end
 RegisterServerEvent('cnr:requestConfigItems')
 AddEventHandler('cnr:requestConfigItems', function()
     local source = source
-    Log(string.format("Received Config.Items request from player %s", source), "info")
+    Log(string.format("Received Config.Items request from player %s", source), "info", "CNR_SERVER")
 
     -- Give some time for Config to be fully loaded if this is early in startup
     Citizen.Wait(100)
@@ -8679,9 +2804,9 @@ AddEventHandler('cnr:requestConfigItems', function()
         local itemCount = 0
         for _ in pairs(Config.Items) do itemCount = itemCount + 1 end
         TriggerClientEvent('cnr:receiveConfigItems', source, Config.Items)
-        Log(string.format("Sent Config.Items to player %s (%d items)", source, itemCount), "info")
+        Log(string.format("Sent Config.Items to player %s (%d items)", source, itemCount), "info", "CNR_SERVER")
     else
-        Log(string.format("Failed to send Config.Items to player %s - Config.Items not found or invalid. Config exists: %s, Config.Items type: %s", source, tostring(Config ~= nil), type(Config and Config.Items)), "error")
+        Log(string.format("Failed to send Config.Items to player %s - Config.Items not found or invalid. Config exists: %s, Config.Items type: %s", source, tostring(Config ~= nil), type(Config and Config.Items)), "error", "CNR_SERVER")
         -- Send empty table as fallback
         TriggerClientEvent('cnr:receiveConfigItems', source, {})
     end
@@ -8754,7 +2879,7 @@ AddEventHandler('cnr:issueSpeedingFine', function(targetPlayerId, speed)
         
         -- Log the fine for admin purposes
         Log(string.format("Speeding fine issued: Cop %s fined Player %s $%d for %d mph in %d mph zone", 
-            source, targetPlayerId, fineAmount, speed, Config.SpeedLimitMph))
+            source, targetPlayerId, fineAmount, speed, Config.SpeedLimitMph), "info", "CNR_SERVER")
     else
         SafeTriggerClientEvent('cnr:showNotification', source, 
             string.format("~o~Target player doesn't have enough money for the fine ($%d required, has $%d)", 
@@ -8770,7 +2895,7 @@ AddEventHandler('cnr:checkAdminStatus', function()
     local pData = GetCnrPlayerData(source)
     
     if not pData then
-        Log(string.format("Admin status check failed - no player data for %s", source), "warn")
+        Log(string.format("Admin status check failed - no player data for %s", source), "warn", "CNR_SERVER")
         return
     end
     
@@ -8800,7 +2925,7 @@ AddEventHandler('cnr:checkAdminStatus', function()
     
     if isAdmin then
         TriggerClientEvent('cnr:showAdminPanel', source)
-        Log(string.format("Admin panel opened for player %s", source), "info")
+        Log(string.format("Admin panel opened for player %s", source), "info", "CNR_SERVER")
     else
         -- Show robber menu if they're a robber, otherwise generic message
         if pData.role == "robber" then
@@ -8816,7 +2941,7 @@ RegisterServerEvent('cnr:requestRoleSelection')
 RegisterNetEvent('cnr:requestRoleSelection')
 AddEventHandler('cnr:requestRoleSelection', function()
     local source = source
-    Log(string.format("Role selection requested by player %s", source), "info")
+    Log(string.format("Role selection requested by player %s", source), "info", "CNR_SERVER")
     
     -- Send role selection UI to client
     TriggerClientEvent('cnr:showRoleSelection', source)

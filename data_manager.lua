@@ -528,5 +528,4 @@ end
 -- Initialize when loaded
 DataManager.Initialize()
 
--- Export the data manager module
-return DataManager
+-- DataManager module is now available globally

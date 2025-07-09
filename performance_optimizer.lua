@@ -10,6 +10,14 @@ end
 -- Initialize PerformanceOptimizer module
 PerformanceOptimizer = PerformanceOptimizer or {}
 
+-- Utility function to get table length (for tables with non-numeric keys)
+local function tablelength(T)
+    if not T or type(T) ~= "table" then return 0 end
+    local count = 0
+    for _ in pairs(T) do count = count + 1 end
+    return count
+end
+
 -- Performance monitoring data
 local performanceMetrics = {
     frameTime = 0,
@@ -30,6 +38,29 @@ local batchTimers = {}
 -- ====================================================================
 -- LOOP OPTIMIZATION SYSTEM
 -- ====================================================================
+
+--- Adjust loop interval based on performance metrics
+--- @param loopData table Loop data structure
+--- @param lastExecutionTime number Last execution time in milliseconds
+local function AdjustLoopInterval(loopData, lastExecutionTime)
+    -- If execution time is high, increase interval
+    if lastExecutionTime > Constants.PERFORMANCE.MAX_EXECUTION_TIME_MS then
+        loopData.currentInterval = math.min(loopData.currentInterval * 1.2, loopData.maxInterval)
+    -- If execution time is low and we're not at base interval, decrease it
+    elseif lastExecutionTime < Constants.PERFORMANCE.MAX_EXECUTION_TIME_MS * 0.5 and 
+           loopData.currentInterval > loopData.baseInterval then
+        loopData.currentInterval = math.max(loopData.currentInterval * 0.9, loopData.baseInterval)
+    end
+    
+    -- Priority-based adjustments
+    if loopData.priority <= 2 then
+        -- High priority loops get preference
+        loopData.currentInterval = math.max(loopData.currentInterval * 0.8, loopData.baseInterval)
+    elseif loopData.priority >= 4 then
+        -- Low priority loops get throttled more aggressively
+        loopData.currentInterval = math.min(loopData.currentInterval * 1.5, loopData.maxInterval)
+    end
+end
 
 --- Create an optimized loop that automatically adjusts its interval based on performance
 --- @param callback function Function to execute
@@ -77,7 +108,7 @@ function PerformanceOptimizer.CreateOptimizedLoop(callback, baseInterval, maxInt
             loopData.lastExecution = startTime
             
             -- Adjust interval based on performance
-            PerformanceOptimizer.AdjustLoopInterval(loopData, executionTime)
+            AdjustLoopInterval(loopData, executionTime)
             
             Citizen.Wait(loopData.currentInterval)
         end
@@ -87,29 +118,6 @@ function PerformanceOptimizer.CreateOptimizedLoop(callback, baseInterval, maxInt
         loopCounter, baseInterval, maxInterval, priority))
     
     return loopCounter
-end
-
---- Adjust loop interval based on performance metrics
---- @param loopData table Loop data structure
---- @param lastExecutionTime number Last execution time in milliseconds
-local function AdjustLoopInterval(loopData, lastExecutionTime)
-    -- If execution time is high, increase interval
-    if lastExecutionTime > Constants.PERFORMANCE.MAX_EXECUTION_TIME_MS then
-        loopData.currentInterval = math.min(loopData.currentInterval * 1.2, loopData.maxInterval)
-    -- If execution time is low and we're not at base interval, decrease it
-    elseif lastExecutionTime < Constants.PERFORMANCE.MAX_EXECUTION_TIME_MS * 0.5 and 
-           loopData.currentInterval > loopData.baseInterval then
-        loopData.currentInterval = math.max(loopData.currentInterval * 0.9, loopData.baseInterval)
-    end
-    
-    -- Priority-based adjustments
-    if loopData.priority <= 2 then
-        -- High priority loops get preference
-        loopData.currentInterval = math.max(loopData.currentInterval * 0.8, loopData.baseInterval)
-    elseif loopData.priority >= 4 then
-        -- Low priority loops get throttled more aggressively
-        loopData.currentInterval = math.min(loopData.currentInterval * 1.5, loopData.maxInterval)
-    end
 end
 
 --- Stop an optimized loop
@@ -430,5 +438,4 @@ end
 -- Initialize when loaded
 PerformanceOptimizer.Initialize()
 
--- Export the performance optimizer module
-return PerformanceOptimizer
+-- PerformanceOptimizer module is now available globally

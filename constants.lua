@@ -271,5 +271,4 @@ Constants.PERFORMANCE = {
     MAX_CONCURRENT_OPERATIONS = 10
 }
 
--- Export the constants table
-return Constants
+-- Constants table is now available globally

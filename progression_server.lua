@@ -14,22 +14,6 @@ local prestigeData = {} -- Store prestige information
 -- Utility Functions
 -- =========================
 
--- Enhanced logging function
-local function LogProgression(message, level)
-    level = level or "info"
-    if Config.DebugLogging then
-        print(string.format("[CNR_PROGRESSION] [%s] %s", string.upper(level), message))
-    end
-end
-
--- Safe trigger client event with error handling
-local function SafeTriggerClientEventProgression(eventName, playerId, ...)
-    if GetPlayerName(tostring(playerId)) then
-        TriggerClientEvent(eventName, playerId, ...)
-    else
-        LogProgression(string.format("Failed to trigger %s for player %s - player not found", eventName, playerId), "warn")
-    end
-end
 
 -- Calculate total XP required to reach a specific level
 local function CalculateTotalXPForLevel(targetLevel, role)
@@ -113,7 +97,7 @@ function ApplyPerks(playerId, level, role)
             for _, unlock in ipairs(levelUnlocks) do
                 if unlock.type == "passive_perk" then
                     playerPerks[pIdNum][unlock.perkId] = unlock.value
-                    LogProgression(string.format("Applied perk %s to player %s (value: %s)", unlock.perkId, pIdNum, tostring(unlock.value)))
+                    Log(string.format("Applied perk %s to player %s (value: %s)", unlock.perkId, pIdNum, tostring(unlock.value)), "info", "CNR_PROGRESSION")
                 end
             end
         end
@@ -128,7 +112,7 @@ function ApplyPerks(playerId, level, role)
         end
     end
     
-    LogProgression(string.format("Applied perks for player %s (Level %d, Role %s)", pIdNum, level, role))
+    Log(string.format("Applied perks for player %s (Level %d, Role %s)", pIdNum, level, role), "info", "CNR_PROGRESSION")
 end
 
 -- =========================
@@ -189,10 +173,10 @@ function AddXP(playerId, amount, type, reason)
     UpdateChallengeProgress(pIdNum, reason, 1)
     
     -- Notify client
-    SafeTriggerClientEventProgression('cnr:xpGained', pIdNum, amount, reason)
+    SafeTriggerClientEvent('cnr:xpGained', pIdNum, amount, reason)
     
-    LogProgression(string.format("Player %s gained %d XP (Reason: %s, Total: %d, Level: %d)", 
-        pIdNum, amount, reason or "unknown", pData.xp, pData.level))
+    Log(string.format("Player %s gained %d XP (Reason: %s, Total: %d, Level: %d)", 
+        pIdNum, amount, reason or "unknown", pData.xp, pData.level), "info", "CNR_PROGRESSION")
 end
 
 -- =========================
@@ -220,15 +204,15 @@ function HandleLevelUp(playerId, oldLevel, newLevel, role)
     end
     
     -- Send level up notification
-    SafeTriggerClientEventProgression('cnr:levelUp', pIdNum, newLevel, pData.xp)
-    SafeTriggerClientEventProgression('chat:addMessage', pIdNum, { 
+    SafeTriggerClientEvent('cnr:levelUp', pIdNum, newLevel, pData.xp)
+    SafeTriggerClientEvent('chat:addMessage', pIdNum, { 
         args = {"^2🎉 LEVEL UP!", string.format("Congratulations! You've reached Level %d!", newLevel)} 
     })
     
     -- Play level up sound and effects
-    SafeTriggerClientEventProgression('cnr:playLevelUpEffects', pIdNum, newLevel)
+    SafeTriggerClientEvent('cnr:playLevelUpEffects', pIdNum, newLevel)
     
-    LogProgression(string.format("Player %s leveled up from %d to %d (Role: %s)", pIdNum, oldLevel, newLevel, role))
+    Log(string.format("Player %s leveled up from %d to %d (Role: %s)", pIdNum, oldLevel, newLevel, role), "info", "CNR_PROGRESSION")
 end
 
 -- =========================
@@ -244,36 +228,36 @@ function ProcessLevelUnlock(playerId, unlock, level)
     
     if unlock.type == "cash_reward" then
         pData.money = (pData.money or 0) + unlock.amount
-        SafeTriggerClientEventProgression('chat:addMessage', pIdNum, { 
+        SafeTriggerClientEvent('chat:addMessage', pIdNum, { 
             args = {"^2💰 REWARD", unlock.message} 
         })
         
     elseif unlock.type == "item_access" then
-        SafeTriggerClientEventProgression('chat:addMessage', pIdNum, { 
+        SafeTriggerClientEvent('chat:addMessage', pIdNum, { 
             args = {"^3🔓 UNLOCK", unlock.message} 
         })
         
     elseif unlock.type == "vehicle_access" then
-        SafeTriggerClientEventProgression('chat:addMessage', pIdNum, { 
+        SafeTriggerClientEvent('chat:addMessage', pIdNum, { 
             args = {"^4🚗 VEHICLE", unlock.message} 
         })
         
     elseif unlock.type == "ability" then
-        SafeTriggerClientEventProgression('chat:addMessage', pIdNum, { 
+        SafeTriggerClientEvent('chat:addMessage', pIdNum, { 
             args = {"^5⚡ ABILITY", unlock.message} 
         })
-        SafeTriggerClientEventProgression('cnr:unlockAbility', pIdNum, unlock.abilityId, unlock.name)
+        SafeTriggerClientEvent('cnr:unlockAbility', pIdNum, unlock.abilityId, unlock.name)
         
     elseif unlock.type == "passive_perk" then
-        SafeTriggerClientEventProgression('chat:addMessage', pIdNum, { 
+        SafeTriggerClientEvent('chat:addMessage', pIdNum, { 
             args = {"^6🌟 PERK", unlock.message} 
         })
     end
     
     -- Send unlock notification to UI
-    SafeTriggerClientEventProgression('cnr:showUnlockNotification', pIdNum, unlock, level)
+    SafeTriggerClientEvent('cnr:showUnlockNotification', pIdNum, unlock, level)
     
-    LogProgression(string.format("Processed unlock for player %s: %s (Level %d)", pIdNum, unlock.type, level))
+    Log(string.format("Processed unlock for player %s: %s (Level %d)", pIdNum, unlock.type, level), "info", "CNR_PROGRESSION")
 end
 
 -- =========================
@@ -326,12 +310,12 @@ function HandlePrestige(playerId)
         ApplyPerks(pIdNum, 1, pData.role)
         
         -- Notify player
-        SafeTriggerClientEventProgression('cnr:prestigeComplete', pIdNum, newPrestigeLevel, prestigeReward)
-        SafeTriggerClientEventProgression('chat:addMessage', pIdNum, { 
+        SafeTriggerClientEvent('cnr:prestigeComplete', pIdNum, newPrestigeLevel, prestigeReward)
+        SafeTriggerClientEvent('chat:addMessage', pIdNum, { 
             args = {"^6🌟 PRESTIGE", string.format("Congratulations! You are now %s (Prestige %d)!", prestigeReward.title, newPrestigeLevel)} 
         })
         
-        LogProgression(string.format("Player %s prestiged to level %d (%s)", pIdNum, newPrestigeLevel, prestigeReward.title))
+        Log(string.format("Player %s prestiged to level %d (%s)", pIdNum, newPrestigeLevel, prestigeReward.title), "info", "CNR_PROGRESSION")
         return true, "Prestige successful"
     end
     
@@ -371,7 +355,7 @@ function InitializeChallenges(playerId)
         end
     end
     
-    LogProgression(string.format("Initialized challenges for player %s", pIdNum))
+    Log(string.format("Initialized challenges for player %s", pIdNum), "info", "CNR_PROGRESSION")
 end
 
 function UpdateChallengeProgress(playerId, action, amount)
@@ -413,7 +397,7 @@ function UpdateChallengeProgress(playerId, action, amount)
                 end
                 
                 -- Notify client of progress update
-                SafeTriggerClientEventProgression('cnr:updateChallengeProgress', pIdNum, challengeId, challengeData)
+                SafeTriggerClientEvent('cnr:updateChallengeProgress', pIdNum, challengeId, challengeData)
             end
         end
     end
@@ -436,12 +420,12 @@ function CompleteChallengeReward(playerId, challengeId, challengeData)
     end
     
     -- Notify player
-    SafeTriggerClientEventProgression('cnr:challengeCompleted', pIdNum, challengeId, challengeData)
-    SafeTriggerClientEventProgression('chat:addMessage', pIdNum, { 
+    SafeTriggerClientEvent('cnr:challengeCompleted', pIdNum, challengeId, challengeData)
+    SafeTriggerClientEvent('chat:addMessage', pIdNum, { 
         args = {"^3🏆 CHALLENGE", string.format("Challenge completed! +%d XP, +$%d", challengeData.xpReward, challengeData.cashReward)} 
     })
     
-    LogProgression(string.format("Player %s completed challenge %s", pIdNum, challengeId))
+    Log(string.format("Player %s completed challenge %s", pIdNum, challengeId), "info", "CNR_PROGRESSION")
 end
 
 -- =========================
@@ -466,7 +450,7 @@ function StartSeasonalEvent(eventName)
                 args = {"^5🎉 EVENT", string.format("Seasonal Event Started: %s - %s", event.name, event.description)} 
             })
             
-            LogProgression(string.format("Started seasonal event: %s", eventName))
+            Log(string.format("Started seasonal event: %s", eventName), "info", "CNR_PROGRESSION")
             return true
         end
     end
@@ -481,7 +465,7 @@ function CheckSeasonalEventExpiry()
             args = {"^5📅 EVENT", string.format("Seasonal Event Ended: %s", activeSeasonalEvent.name)} 
         })
         
-        LogProgression(string.format("Ended seasonal event: %s", activeSeasonalEvent.name))
+        Log(string.format("Ended seasonal event: %s", activeSeasonalEvent.name), "info", "CNR_PROGRESSION")
         activeSeasonalEvent = nil
     end
 end
@@ -572,4 +556,4 @@ exports('GetPlayerPrestige', GetPlayerPrestige)
 exports('StartSeasonalEvent', StartSeasonalEvent)
 exports('UpdateChallengeProgress', UpdateChallengeProgress)
 
-LogProgression("Enhanced Progression System loaded successfully")
+Log("Enhanced Progression System loaded successfully", "info", "CNR_PROGRESSION")

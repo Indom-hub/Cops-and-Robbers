@@ -12,27 +12,13 @@ end
 -- Ensure Config is accessible for Log function; it should be global if config.lua ran.
 local Config = Config
 
-local function Log(message, level)
-    level = level or "info"
-    local shouldLog = false
-    if Config and Config.DebugLogging then
-        shouldLog = true
-    end
-
-    -- Always log errors and warnings, even if DebugLogging is disabled
-    if shouldLog or level == "error" or level == "warn" then
-        if level == "error" then print("[CNR_INV_SERV_ERROR] " .. message)
-        elseif level == "warn" then print("[CNR_INV_SERV_WARN] " .. message)
-        else print("[CNR_INV_SERV_INFO] " .. message) end
-    end
-end
 
 -- Initialize player inventory when they load (called from main server.lua)
 -- Accepts pData directly to avoid global lookups. playerId is for logging.
 function InitializePlayerInventory(pData, playerId)
     if pData and not pData.inventory then
         pData.inventory = {} -- { itemId = { count = X, metadata = {...} } }
-        Log("Initialized empty inventory for player " .. (playerId or "Unknown"))
+        Log("Initialized empty inventory for player " .. (playerId or "Unknown"), "info", "CNR_INV_SERVER")
     end
 end
 
@@ -43,7 +29,7 @@ function CanCarryItem(playerId, itemId, quantity)
     
     -- Check if Config.Items exists for the item
     if not Config.Items[itemId] then
-        Log("CanCarryItem: Unknown item ID: " .. tostring(itemId))
+        Log("CanCarryItem: Unknown item ID: " .. tostring(itemId), "warn", "CNR_INV_SERVER")
         return false
     end
     
@@ -68,7 +54,7 @@ function AddItem(pData, itemId, quantity, playerId)
     quantity = tonumber(quantity) or 1
 
     if not pData then
-        Log("AddItem: Player data (pData) not provided for player " .. (playerId or "Unknown"), "error")
+        Log("AddItem: Player data (pData) not provided for player " .. (playerId or "Unknown"), "error", "CNR_INV_SERVER")
         return false
     end
     -- Ensure inventory table exists on pData
@@ -83,12 +69,12 @@ function AddItem(pData, itemId, quantity, playerId)
             end
         end
     else
-        Log("AddItem: Config.Items not available or not properly configured for player " .. (playerId or "Unknown"), "error")
+        Log("AddItem: Config.Items not available or not properly configured for player " .. (playerId or "Unknown"), "error", "CNR_INV_SERVER")
         return false
     end
 
     if not itemConfig then
-        Log("AddItem: Item config not found for " .. itemId .. " for player " .. (playerId or "Unknown"), "warn")
+        Log("AddItem: Item config not found for " .. itemId .. " for player " .. (playerId or "Unknown"), "warn", "CNR_INV_SERVER")
         return false
     end
 
@@ -96,7 +82,7 @@ function AddItem(pData, itemId, quantity, playerId)
         pData.inventory[itemId] = { count = 0, name = itemConfig.name, category = itemConfig.category } -- Store basic info
     end
     pData.inventory[itemId].count = pData.inventory[itemId].count + quantity
-    Log(string.format("Added %dx %s to player %s's inventory. New count: %d", quantity, itemId, playerId or "Unknown", pData.inventory[itemId].count))
+    Log(string.format("Added %dx %s to player %s's inventory. New count: %d", quantity, itemId, playerId or "Unknown", pData.inventory[itemId].count), "info", "CNR_INV_SERVER")
     if playerId then
         local playerIdNum = tonumber(playerId)
         if playerIdNum then
@@ -112,12 +98,12 @@ function RemoveItem(pData, itemId, quantity, playerId)
     quantity = tonumber(quantity) or 1
 
     if not pData or not pData.inventory then
-        Log("RemoveItem: Player data (pData) or inventory not provided for player " .. (playerId or "Unknown"), "error")
+        Log("RemoveItem: Player data (pData) or inventory not provided for player " .. (playerId or "Unknown"), "error", "CNR_INV_SERVER")
         return false
     end
 
     if not pData.inventory[itemId] or pData.inventory[itemId].count < quantity then
-        Log(string.format("RemoveItem: Player %s does not have %dx %s. Has: %d", playerId or "Unknown", quantity, itemId, (pData.inventory[itemId] and pData.inventory[itemId].count or 0)), "warn")
+        Log(string.format("RemoveItem: Player %s does not have %dx %s. Has: %d", playerId or "Unknown", quantity, itemId, (pData.inventory[itemId] and pData.inventory[itemId].count or 0)), "warn", "CNR_INV_SERVER")
         return false
     end
 
@@ -125,7 +111,7 @@ function RemoveItem(pData, itemId, quantity, playerId)
     if pData.inventory[itemId].count <= 0 then
         pData.inventory[itemId] = nil -- Remove item if count is zero
     end
-    Log(string.format("Removed %dx %s from player %s's inventory.", quantity, itemId, playerId or "Unknown"))
+    Log(string.format("Removed %dx %s from player %s's inventory.", quantity, itemId, playerId or "Unknown"), "info", "CNR_INV_SERVER")
     if playerId then
         local playerIdNum = tonumber(playerId)
         if playerIdNum then
@@ -139,7 +125,7 @@ end
 -- Accepts pData directly. playerId (3rd arg) is for potential future logging.
 function GetInventory(pData, specificItemId, playerId)
     if not pData or not pData.inventory then
-        Log(string.format("GetInventory: Player data (pData) or inventory not provided for player %s.", playerId or "Unknown"), "warn")
+        Log(string.format("GetInventory: Player data (pData) or inventory not provided for player %s.", playerId or "Unknown"), "warn", "CNR_INV_SERVER")
         return specificItemId and 0 or {}
     end
 
@@ -171,7 +157,7 @@ AddEventHandler('cnr:getInventoryForUI', function()
     local pData = GetCnrPlayerData(source)
 
     if not pData then
-        Log("Failed to get player data for inventory UI request", "error")
+        Log("Failed to get player data for inventory UI request", "error", "CNR_INV_SERVER")
         return
     end
 
@@ -184,7 +170,7 @@ AddEventHandler('cnr:getInventoryForUI', function()
 
     -- Send inventory and equipped items to client
     TriggerClientEvent('cnr:sendInventoryForUI', source, pData.inventory or {}, equippedItemsArray)
-    Log(string.format("Sent inventory UI data to player %d", source))
+    Log(string.format("Sent inventory UI data to player %d", source), "info", "CNR_INV_SERVER")
 end)
 
 -- Event: Equip/unequip item
@@ -231,7 +217,7 @@ AddEventHandler('cnr:equipItem', function(itemId, shouldEquip)
         HandleItemEquip(source, itemId, itemConfig, pData)
 
         TriggerClientEvent('cnr:equipItemResult', source, true, "Item equipped")
-        Log(string.format("Player %d equipped item %s", source, itemId))
+        Log(string.format("Player %d equipped item %s", source, itemId), "info", "CNR_INV_SERVER")
 
     elseif not shouldEquip and isCurrentlyEquipped then
         -- Unequip item
@@ -241,7 +227,7 @@ AddEventHandler('cnr:equipItem', function(itemId, shouldEquip)
         HandleItemUnequip(source, itemId, itemConfig, pData)
 
         TriggerClientEvent('cnr:equipItemResult', source, true, "Item unequipped")
-        Log(string.format("Player %d unequipped item %s", source, itemId))
+        Log(string.format("Player %d unequipped item %s", source, itemId), "info", "CNR_INV_SERVER")
     else
         TriggerClientEvent('cnr:equipItemResult', source, false, isCurrentlyEquipped and "Item already equipped" or "Item not equipped")
         return
@@ -315,13 +301,13 @@ AddEventHandler('cnr:dropItem', function(itemId, quantity)
             local remainingCount = GetInventory(pData, itemId, source)
             if remainingCount <= 0 then
                 playerEquippedItems[source][itemId] = nil
-                Log(string.format("Auto-unequipped %s for player %d (item dropped to 0)", itemId, source))
+                Log(string.format("Auto-unequipped %s for player %d (item dropped to 0)", itemId, source), "info", "CNR_INV_SERVER")
             end
         end
 
         UpdateInventoryUI(source)
         TriggerClientEvent('cnr:dropItemResult', source, true, "Item dropped")
-        Log(string.format("Player %d dropped %dx %s", source, quantity, itemId))
+        Log(string.format("Player %d dropped %dx %s", source, quantity, itemId), "info", "CNR_INV_SERVER")
     else
         TriggerClientEvent('cnr:dropItemResult', source, false, "Failed to drop item")
     end
@@ -333,7 +319,7 @@ AddEventHandler('cnr:requestMyInventory', function()
     local playerId = source
     local pData = GetCnrPlayerData(playerId)
     
-    if pData and pData.inventory then        Log(string.format("Player %d requested their inventory. Sending data...", playerId))
+    if pData and pData.inventory then        Log(string.format("Player %d requested their inventory. Sending data...", playerId), "info", "CNR_INV_SERVER")
         
         -- Get equipped items for this player
         local equippedItems = playerEquippedItems[playerId] or {}
@@ -348,7 +334,7 @@ AddEventHandler('cnr:requestMyInventory', function()
         
         -- Send the inventory data to the client
         TriggerClientEvent('cnr:receiveMyInventory', playerId, pData.inventory, equippedItemsArray)
-    else        Log(string.format("Player %d requested inventory but no data was found!", playerId), "warn")
+    else        Log(string.format("Player %d requested inventory but no data was found!", playerId), "warn", "CNR_INV_SERVER")
         -- Send an empty inventory to prevent UI errors
         TriggerClientEvent('cnr:receiveMyInventory', playerId, {}, {}) -- Return empty array for equipped items as well
     end
@@ -361,13 +347,13 @@ AddEventHandler('cnr:requestConfigItems', function()
     
     -- Ensure Config.Items exists
     if not Config or not Config.Items then
-        Log("Config.Items not available when requested by player " .. source, "error")
+        Log("Config.Items not available when requested by player " .. source, "error", "CNR_INV_SERVER")
         return
     end
     
     -- Send the items configuration to the client
     TriggerClientEvent('cnr:receiveConfigItems', source, Config.Items)
-    Log("Sent Config.Items to player " .. source, "info")
+    Log("Sent Config.Items to player " .. source, "info", "CNR_INV_SERVER")
 end)
 
 -- Helper function to get item config
@@ -504,16 +490,16 @@ function HandleItemDrop(playerId, itemId, quantity)
         
         if pickup then
             Log(string.format("Created pickup for %dx %s at coords %s (pickup ID: %d)", 
-                quantity, itemId, coords, pickup))
+                quantity, itemId, coords, pickup), "info", "CNR_INV_SERVER")
             
             -- Store pickup info for potential collection by other players
             -- This could be expanded to allow other players to pick up dropped items
         else
-            Log(string.format("Failed to create pickup for %dx %s", quantity, itemId))
+            Log(string.format("Failed to create pickup for %dx %s", quantity, itemId), "warn", "CNR_INV_SERVER")
         end
     end
     
-    Log(string.format("Player %d dropped %dx %s at coords %s", playerId, quantity, itemId, coords))
+    Log(string.format("Player %d dropped %dx %s at coords %s", playerId, quantity, itemId, coords), "info", "CNR_INV_SERVER")
 end
 
 -- Update inventory UI for a player
@@ -535,7 +521,7 @@ AddEventHandler('playerDropped', function(reason)
     local playerId = source
     if playerEquippedItems[playerId] then
         playerEquippedItems[playerId] = nil
-        Log(string.format("Cleaned up equipped items for disconnected player %d", playerId))
+        Log(string.format("Cleaned up equipped items for disconnected player %d", playerId), "info", "CNR_INV_SERVER")
     end
 end)
 
@@ -544,4 +530,4 @@ function IsItemEquipped(playerId, itemId)
     return playerEquippedItems[playerId] and playerEquippedItems[playerId][itemId] == true
 end
 
-Log("Custom Inventory System (server-side) loaded.")
+Log("Custom Inventory System (server-side) loaded.", "info", "CNR_INV_SERVER")

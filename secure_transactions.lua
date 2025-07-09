@@ -518,5 +518,4 @@ end
 -- Initialize when loaded
 SecureTransactions.Initialize()
 
--- Export the secure transactions module
-return SecureTransactions
+-- SecureTransactions module is now available globally

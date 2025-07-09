@@ -687,5 +687,4 @@ end
 -- Initialize when loaded
 PlayerManager.Initialize()
 
--- Export the player manager module
-return PlayerManager
+-- PlayerManager module is now available globally

@@ -131,14 +131,6 @@ local originalPlayerModelHash = nil -- Variable to store the player's model befo
 --           HELPER FUNCTIONS
 -- =====================================
 
--- Define Log function for consistent logging across client
-local function Log(message, level)
-    level = level or "info"
-    -- Only show critical errors and warnings to reduce spam
-    if level == "error" or level == "warn" then
-        print("[CNR_CLIENT_CRITICAL] [" .. string.upper(level) .. "] " .. message)
-    end
-end
 
 -- Helper function to draw text on screen
 function DrawText2D(x, y, text, scale, color)
@@ -1385,10 +1377,10 @@ end)
 
 -- Register NUI callback for buying items
 RegisterNUICallback('buyItem', function(data, cb)
-    Log("buyItem NUI callback received for itemId: " .. tostring(data.itemId) .. " quantity: " .. tostring(data.quantity), "info")
+    Log("buyItem NUI callback received for itemId: " .. tostring(data.itemId) .. " quantity: " .. tostring(data.quantity), "info", "CNR_CLIENT")
     
     if not data.itemId or not data.quantity then
-        Log("buyItem NUI callback missing required data", "error")
+        Log("buyItem NUI callback missing required data", "error", "CNR_CLIENT")
         cb({success = false, message = "Missing required data"})
         return
     end
@@ -1402,10 +1394,10 @@ end)
 
 -- Register NUI callback for selling items
 RegisterNUICallback('sellItem', function(data, cb)
-    Log("sellItem NUI callback received for itemId: " .. tostring(data.itemId) .. " quantity: " .. tostring(data.quantity), "info")
+    Log("sellItem NUI callback received for itemId: " .. tostring(data.itemId) .. " quantity: " .. tostring(data.quantity), "info", "CNR_CLIENT")
     
     if not data.itemId or not data.quantity then
-        Log("sellItem NUI callback missing required data", "error")
+        Log("sellItem NUI callback missing required data", "error", "CNR_CLIENT")
         cb({success = false, message = "Missing required data"})
         return
     end
@@ -1419,7 +1411,7 @@ end)
 
 -- Register NUI callback for getting player inventory
 RegisterNUICallback('getPlayerInventory', function(data, cb)
-    Log("getPlayerInventory NUI callback received", "info")
+    Log("getPlayerInventory NUI callback received", "info", "CNR_CLIENT")
     
     -- Trigger server event to get player inventory
     TriggerServerEvent('cops_and_robbers:getPlayerInventory')
@@ -1626,7 +1618,7 @@ end
 -- Function to open the store menu
 function OpenStoreMenu(storeType, storeItems, storeName)
     if not storeType or not storeItems or not storeName then
-        Log("OpenStoreMenu called with invalid parameters", "error")
+        Log("OpenStoreMenu called with invalid parameters", "error", "CNR_CLIENT")
         return
     end
     
@@ -1660,7 +1652,7 @@ end
 
 -- Register NUI callback for closing the store
 RegisterNUICallback('closeStore', function(data, cb)
-    Log("closeStore NUI callback received", "info")
+    Log("closeStore NUI callback received", "info", "CNR_CLIENT")
     
     -- Reset UI flags
     isCopStoreUiOpen = false
@@ -1675,10 +1667,10 @@ end)
 -- Handle detailed item list from server for store UI
 RegisterNetEvent('cops_and_robbers:sendItemList')
 AddEventHandler('cops_and_robbers:sendItemList', function(storeName, itemList, playerInfo)
-    Log("Received detailed item list for store: " .. tostring(storeName) .. " with " .. (#itemList or 0) .. " items", "info")
+    Log("Received detailed item list for store: " .. tostring(storeName) .. " with " .. (#itemList or 0) .. " items", "info", "CNR_CLIENT")
     
     if not itemList or #itemList == 0 then
-        Log("Received empty item list for store: " .. tostring(storeName), "warning")
+        Log("Received empty item list for store: " .. tostring(storeName), "warning", "CNR_CLIENT")
         return
     end
     
@@ -1686,11 +1678,11 @@ AddEventHandler('cops_and_robbers:sendItemList', function(storeName, itemList, p
     if playerInfo then
         if playerInfo.cash and playerInfo.cash ~= playerCash then
             playerCash = playerInfo.cash
-            Log("Updated playerCash from server: " .. tostring(playerCash), "info")
+            Log("Updated playerCash from server: " .. tostring(playerCash), "info", "CNR_CLIENT")
         end
         if playerInfo.level and playerData.level ~= playerInfo.level then
             playerData.level = playerInfo.level
-            Log("Updated playerData.level from server: " .. tostring(playerData.level), "info")
+            Log("Updated playerData.level from server: " .. tostring(playerData.level), "info", "CNR_CLIENT")
         end
     end
     
@@ -1706,13 +1698,13 @@ AddEventHandler('cops_and_robbers:sendItemList', function(storeName, itemList, p
         }
     })
     
-    Log("Sent store data to NUI for " .. tostring(storeName), "info")
+    Log("Sent store data to NUI for " .. tostring(storeName), "info", "CNR_CLIENT")
 end)
 
 -- Handle contraband store UI opening
 RegisterNetEvent('cnr:openContrabandStoreUI')
 AddEventHandler('cnr:openContrabandStoreUI', function(contrabandItems)
-    Log("Opening contraband store UI with " .. #contrabandItems .. " items", "info")
+    Log("Opening contraband store UI with " .. #contrabandItems .. " items", "info", "CNR_CLIENT")
     
     -- Open store menu as a special contraband store
     OpenStoreMenu("contraband", contrabandItems, "Contraband Dealer")
@@ -2105,7 +2097,7 @@ local function StopJailUpdateThread()
     -- Thread checks the isJailed flag, so simply hide the timer display
     jailTimerDisplayActive = false
     jailThreadRunning = false
-    Log("Jail update thread signaled to stop.", "info")
+    Log("Jail update thread signaled to stop.", "info", "CNR_CLIENT")
 end
 
 local function StartJailUpdateThread(duration)
@@ -2114,13 +2106,13 @@ local function StartJailUpdateThread(duration)
 
     -- Avoid spawning multiple threads
     if jailThreadRunning then
-        Log("Jail update thread already running. Timer updated to " .. jailTimeRemaining, "info")
+        Log("Jail update thread already running. Timer updated to " .. jailTimeRemaining, "info", "CNR_CLIENT")
         return
     end
 
     jailThreadRunning = true
     Citizen.CreateThread(function()
-        Log("Jail update thread started. Duration: " .. jailTimeRemaining, "info")
+        Log("Jail update thread started. Duration: " .. jailTimeRemaining, "info", "CNR_CLIENT")
         local playerPed = PlayerPedId()
 
         while isJailed and jailTimeRemaining > 0 do
@@ -2181,7 +2173,7 @@ local function StartJailUpdateThread(duration)
             local distanceToJailCenter = #(currentPos - JailMainPoint)
 
             if distanceToJailCenter > JailRadius then
-                Log("Jailed player attempted to escape. Teleporting back.", "warn")
+                Log("Jailed player attempted to escape. Teleporting back.", "warn", "CNR_CLIENT")
                 ShowNotification("~r~You cannot leave the prison area.")
                 SetEntityCoords(playerPed, JailMainPoint.x, JailMainPoint.y, JailMainPoint.z, false, false, false, true)
             end
@@ -2189,13 +2181,13 @@ local function StartJailUpdateThread(duration)
             if jailTimeRemaining <= 0 then
                 isJailed = false -- Ensure flag is set before potentially triggering release
                 -- Server will trigger cnr:releaseFromJail, client should not do it directly
-                Log("Jail time expired on client. Waiting for server release.", "info")
+                Log("Jail time expired on client. Waiting for server release.", "info", "CNR_CLIENT")
                 SendNUIMessage({ action = "hideJailTimer" })
                 jailTimerDisplayActive = false
                 break
             end
         end
-        Log("Jail update thread finished or player released.", "info")
+        Log("Jail update thread finished or player released.", "info", "CNR_CLIENT")
         jailTimerDisplayActive = false
         SendNUIMessage({ action = "hideJailTimer" })
         jailThreadRunning = false
@@ -2204,7 +2196,7 @@ end
 
 local function ApplyPlayerModel(modelHash)
     if not modelHash or modelHash == 0 then
-        Log("ApplyPlayerModel: Invalid modelHash received: " .. tostring(modelHash), "error")
+        Log("ApplyPlayerModel: Invalid modelHash received: " .. tostring(modelHash), "error", "CNR_CLIENT")
         return
     end
 
@@ -2217,19 +2209,19 @@ local function ApplyPlayerModel(modelHash)
     end
 
     if HasModelLoaded(modelHash) then
-        Log("ApplyPlayerModel: Model " .. modelHash .. " loaded. Setting player model.", "info")
+        Log("ApplyPlayerModel: Model " .. modelHash .. " loaded. Setting player model.", "info", "CNR_CLIENT")
         SetPlayerModel(PlayerId(), modelHash)
         Citizen.Wait(100) -- Allow model to apply
         SetPedDefaultComponentVariation(playerPed) -- Reset components to default for the new model
         SetModelAsNoLongerNeeded(modelHash)
     else
-        Log("ApplyPlayerModel: Failed to load model " .. modelHash .. " after 100 attempts.", "error")
+        Log("ApplyPlayerModel: Failed to load model " .. modelHash .. " after 100 attempts.", "error", "CNR_CLIENT")
         ShowNotification("~r~Error applying appearance change.")
     end
 end
 
 AddEventHandler('cnr:sendToJail', function(durationSeconds, prisonLocation)
-    Log(string.format("Received cnr:sendToJail. Duration: %d, Location: %s", durationSeconds, json.encode(prisonLocation)), "info")
+    Log(string.format("Received cnr:sendToJail. Duration: %d, Location: %s", durationSeconds, json.encode(prisonLocation)), "info", "CNR_CLIENT")
     local playerPed = PlayerPedId()
 
     isJailed = true
@@ -2237,7 +2229,7 @@ AddEventHandler('cnr:sendToJail', function(durationSeconds, prisonLocation)
 
     -- Store original player model
     originalPlayerModelHash = GetEntityModel(playerPed)
-    Log("Stored original player model: " .. originalPlayerModelHash, "info")
+    Log("Stored original player model: " .. originalPlayerModelHash, "info", "CNR_CLIENT")
 
     -- Apply jail uniform
     local jailUniformModelKey = Config.JailUniformModel or "a_m_m_prisoner_01" -- Fallback if config is missing
@@ -2245,7 +2237,7 @@ AddEventHandler('cnr:sendToJail', function(durationSeconds, prisonLocation)
     if jailUniformModelHash ~= 0 then
         ApplyPlayerModel(jailUniformModelHash)
     else
-        Log("Invalid JailUniformModel in Config: " .. jailUniformModelKey, "error")
+        Log("Invalid JailUniformModel in Config: " .. jailUniformModelKey, "error", "CNR_CLIENT")
     end
 
     -- Teleport player to prison
@@ -2256,7 +2248,7 @@ AddEventHandler('cnr:sendToJail', function(durationSeconds, prisonLocation)
         SetEntityHeading(playerPed, prisonLocation.w or 0.0) -- Use heading if provided
         ClearPedTasksImmediately(playerPed)
     else
-        Log("cnr:sendToJail - Invalid prisonLocation received. Using default: " .. json.encode(JailMainPoint), "error")
+        Log("cnr:sendToJail - Invalid prisonLocation received. Using default: " .. json.encode(JailMainPoint), "error", "CNR_CLIENT")
         ShowNotification("~r~Error: Could not teleport to jail - invalid location.")
         isJailed = false -- Don't proceed if teleport fails
         originalPlayerModelHash = nil -- Clear stored model if jailing fails
@@ -2277,7 +2269,7 @@ AddEventHandler('cnr:sendToJail', function(durationSeconds, prisonLocation)
 end)
 
 AddEventHandler('cnr:releaseFromJail', function()
-    Log("Received cnr:releaseFromJail.", "info")
+    Log("Received cnr:releaseFromJail.", "info", "CNR_CLIENT")
     local playerPed = PlayerPedId()
 
     isJailed = false
@@ -2289,15 +2281,15 @@ AddEventHandler('cnr:releaseFromJail', function()
 
     -- Restore player model
     if originalPlayerModelHash and originalPlayerModelHash ~= 0 then
-        Log("Restoring original player model: " .. originalPlayerModelHash, "info")
+        Log("Restoring original player model: " .. originalPlayerModelHash, "info", "CNR_CLIENT")
         ApplyPlayerModel(originalPlayerModelHash)
     else
-        Log("No original player model stored or it was invalid. Attempting to restore to role default or citizen model.", "warn")
+        Log("No original player model stored or it was invalid. Attempting to restore to role default or citizen model.", "warn", "CNR_CLIENT")
         if playerData and playerData.role and playerData.role ~= "" and playerData.role ~= "citizen" then
-            Log("Attempting to apply model for role: " .. playerData.role, "info")
+            Log("Attempting to apply model for role: " .. playerData.role, "info", "CNR_CLIENT")
             ApplyRoleVisualsAndLoadout(playerData.role, nil) -- Applies role default model & basic loadout
         else
-            Log("Player role unknown or citizen, applying default citizen model.", "info")
+            Log("Player role unknown or citizen, applying default citizen model.", "info", "CNR_CLIENT")
             ApplyRoleVisualsAndLoadout("citizen", nil) -- Fallback to citizen visuals
         end
     end
@@ -2309,22 +2301,22 @@ AddEventHandler('cnr:releaseFromJail', function()
 
     if playerData and playerData.role and Config.SpawnPoints and Config.SpawnPoints[playerData.role] then
         determinedReleaseLocation = Config.SpawnPoints[playerData.role]
-        Log(string.format("Using spawn point for role '%s'.", playerData.role), "info")
+        Log(string.format("Using spawn point for role '%s'.", playerData.role), "info", "CNR_CLIENT")
     elseif Config.SpawnPoints and Config.SpawnPoints["citizen"] then
         determinedReleaseLocation = Config.SpawnPoints["citizen"]
-        Log("Role spawn not found or role invalid, using citizen spawn point.", "warn")
+        Log("Role spawn not found or role invalid, using citizen spawn point.", "warn", "CNR_CLIENT")
         ShowNotification("~y~Your role spawn was not found, using default citizen spawn.")
     else
         determinedReleaseLocation = hardcodedDefaultSpawn
-        Log("Citizen spawn point also not found in Config. Using hardcoded default spawn.", "error")
+        Log("Citizen spawn point also not found in Config. Using hardcoded default spawn.", "error", "CNR_CLIENT")
         ShowNotification("~r~Error: Default spawn locations not configured. Using a fallback location.")
     end    if determinedReleaseLocation and determinedReleaseLocation.x and determinedReleaseLocation.y and determinedReleaseLocation.z then
         SetEntityCoords(playerPed, determinedReleaseLocation.x, determinedReleaseLocation.y, determinedReleaseLocation.z, false, false, false, true)
         SetEntityHeading(playerPed, 0.0) -- Set default heading since spawn points don't include rotation
-        Log(string.format("Player released from jail. Teleported to: %s", json.encode(determinedReleaseLocation)), "info")
+        Log(string.format("Player released from jail. Teleported to: %s", json.encode(determinedReleaseLocation)), "info", "CNR_CLIENT")
     else
         -- This case should be rare given the fallbacks, but as a last resort:
-        Log("cnr:releaseFromJail - CRITICAL: No valid release spawn point determined even with fallbacks. Player may be stuck or at Zero Coords.", "error")
+        Log("cnr:releaseFromJail - CRITICAL: No valid release spawn point determined even with fallbacks. Player may be stuck or at Zero Coords.", "error", "CNR_CLIENT")
         ShowNotification("~r~CRITICAL ERROR: Could not determine release location. Please contact an admin.")
         -- As an absolute last measure, teleport to a known safe spot if playerPed is valid
         if playerPed and playerPed ~= 0 then

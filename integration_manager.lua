@@ -414,5 +414,4 @@ AddEventHandler('onResourceStop', function(resourceName)
     end
 end)
 
--- Export the integration manager module
-return IntegrationManager
+-- IntegrationManager module is now available globally

@@ -594,5 +594,4 @@ end
 -- Initialize when loaded
 SecureInventory.Initialize()
 
--- Export the secure inventory module
-return SecureInventory
+-- SecureInventory module is now available globally
