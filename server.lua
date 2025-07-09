@@ -579,6 +579,48 @@ local function CalculateDynamicPrice(itemId, basePrice)
     return price
 end
 
+--- Global function to get dynamic item price (accessible from secure_transactions.lua)
+--- @param itemId string Item ID
+--- @param basePrice number Base price of the item
+--- @return number Dynamic price
+GetDynamicItemPrice = function(itemId, basePrice)
+    return CalculateDynamicPrice(itemId, basePrice)
+end
+
+--- Global function to record a purchase in the history (accessible from secure_transactions.lua)
+--- @param playerId number Player ID who made the purchase
+--- @param itemId string Item ID that was purchased
+--- @param quantity number Quantity purchased
+--- @param price number Price paid for the item
+RecordPurchaseInHistory = function(playerId, itemId, quantity, price)
+    if not Config.DynamicEconomy or not Config.DynamicEconomy.enabled then
+        return -- Don't record if dynamic economy is disabled
+    end
+    
+    local purchaseRecord = {
+        playerId = playerId,
+        itemId = itemId,
+        quantity = quantity,
+        price = price,
+        timestamp = os.time()
+    }
+    
+    table.insert(purchaseHistory, purchaseRecord)
+    
+    -- Limit history size to prevent memory issues (keep last 10000 purchases)
+    if #purchaseHistory > 10000 then
+        table.remove(purchaseHistory, 1)
+    end
+    
+    -- Save purchase history periodically (every 10 purchases)
+    if #purchaseHistory % 10 == 0 then
+        SavePurchaseHistory()
+    end
+    
+    Log(string.format("Recorded purchase: Player %d bought %dx %s for $%d", 
+        playerId, quantity, itemId, price), "info", "CNR_SERVER")
+end
+
 -- =================================================================================================
 -- PLAYER DATA MANAGEMENT (XP, LEVELS, SAVING/LOADING)
 -- =================================================================================================

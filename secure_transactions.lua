@@ -67,15 +67,47 @@ local function CalculateSellPrice(itemConfig, quantity)
 end
 
 --- Calculate dynamic buy price (if dynamic economy is enabled)
+--- @param itemId string Item ID
 --- @param itemConfig table Item configuration
 --- @param quantity number Quantity being purchased
 --- @return number Buy price
-local function CalculateBuyPrice(itemConfig, quantity)
+local function CalculateBuyPrice(itemId, itemConfig, quantity)
     local basePrice = itemConfig.basePrice or 0
     
-    -- TODO: Implement dynamic pricing based on purchase history
-    -- For now, just return base price
-    return basePrice * quantity
+    -- Check if dynamic economy is enabled
+    if not Config.DynamicEconomy or not Config.DynamicEconomy.enabled then
+        return basePrice * quantity
+    end
+    
+    -- Get dynamic price for single item
+    local dynamicPrice = basePrice
+    if GetDynamicItemPrice then
+        -- Use global function if available (defined in server.lua)
+        dynamicPrice = GetDynamicItemPrice(itemId, basePrice)
+    else
+        -- Fallback: Apply basic dynamic pricing logic
+        dynamicPrice = CalculateBasicDynamicPrice(itemId, basePrice)
+    end
+    
+    -- Apply quantity and ensure minimum bounds
+    local totalPrice = dynamicPrice * quantity
+    local minPrice = math.floor(basePrice * Constants.ECONOMY.DYNAMIC_PRICE_MIN_MULTIPLIER * quantity)
+    local maxPrice = math.floor(basePrice * Constants.ECONOMY.DYNAMIC_PRICE_MAX_MULTIPLIER * quantity)
+    
+    return math.max(minPrice, math.min(maxPrice, totalPrice))
+end
+
+--- Fallback function for basic dynamic pricing when global function is not available
+--- @param itemId string Item ID
+--- @param basePrice number Base price of the item
+--- @return number Dynamic price
+local function CalculateBasicDynamicPrice(itemId, basePrice)
+    -- This is a simplified version that doesn't access purchase history
+    -- It applies moderate price fluctuation based on time
+    local timeVariation = (GetGameTimer() % 3600000) / 3600000 -- 1-hour cycle
+    local priceMultiplier = 0.9 + (timeVariation * 0.2) -- Varies between 0.9 and 1.1
+    
+    return math.floor(basePrice * priceMultiplier)
 end
 
 -- ====================================================================
@@ -100,7 +132,7 @@ local function StartTransaction(playerId, transactionType, details)
     }
     
     LogTransaction(playerId, transactionType, 
-        string.format("Transaction started: %s", transactionId))
+        string.format("Transaction started: %s", transactionId), Constants.LOG_LEVELS.INFO)
     
     return transactionId, true
 end
@@ -140,7 +172,7 @@ local function CompleteTransaction(transactionId, success, result)
     
     LogTransaction(transaction.playerId, transaction.type, 
         string.format("Transaction completed: %s (%s, took %dms)", 
-            transactionId, success and "SUCCESS" or "FAILED", transactionTime))
+            transactionId, success and "SUCCESS" or "FAILED", transactionTime), Constants.LOG_LEVELS.INFO)
     
     return true
 end
@@ -188,11 +220,20 @@ function SecureTransactions.ProcessPurchase(playerId, itemId, quantity)
         return false, Constants.ERROR_MESSAGES.PLAYER_NOT_FOUND, nil
     end
     
-    -- Validate purchase (role, level, funds)
-    local validPurchase, totalCost, purchaseError = Validation.ValidateItemPurchase(
+    -- Calculate dynamic price
+    local totalCost = CalculateBuyPrice(itemId, itemConfig, validatedQuantity)
+    
+    -- Validate purchase (role, level, funds) - but use our calculated cost
+    local validPurchase, _, purchaseError = Validation.ValidateItemPurchase(
         playerId, itemConfig, validatedQuantity, playerData)
     if not validPurchase then
         return false, purchaseError, nil
+    end
+    
+    -- Additional validation for dynamic cost vs player funds
+    if playerData.money < totalCost then
+        return false, string.format("Insufficient funds. Need $%d, have $%d", 
+            totalCost, playerData.money), nil
     end
     
     -- Start transaction
@@ -226,7 +267,14 @@ function SecureTransactions.ProcessPurchase(playerId, itemId, quantity)
     
     -- Record purchase in history (for dynamic pricing)
     if Config.DynamicEconomy and Config.DynamicEconomy.enabled then
-        -- TODO: Record purchase for dynamic pricing
+        if RecordPurchaseInHistory then
+            -- Use global function to record purchase
+            RecordPurchaseInHistory(playerId, itemId, validatedQuantity, totalCost)
+        else
+            LogTransaction(playerId, "purchase", 
+                "Warning: RecordPurchaseInHistory function not available", 
+                Constants.LOG_LEVELS.WARN)
+        end
     end
     
     -- Complete transaction
@@ -242,7 +290,7 @@ function SecureTransactions.ProcessPurchase(playerId, itemId, quantity)
     
     LogTransaction(playerId, "purchase", 
         string.format("Purchased %dx %s for $%d (balance: $%d)", 
-            validatedQuantity, itemConfig.name, totalCost, playerData.money))
+            validatedQuantity, itemConfig.name, totalCost, playerData.money), Constants.LOG_LEVELS.INFO)
     
     return true, string.format("Successfully purchased %dx %s for $%d", 
         validatedQuantity, itemConfig.name, totalCost), transactionResult
@@ -331,7 +379,7 @@ function SecureTransactions.ProcessSale(playerId, itemId, quantity)
     
     LogTransaction(playerId, "sale", 
         string.format("Sold %dx %s for $%d (balance: $%d)", 
-            validatedQuantity, itemConfig.name, sellPrice, playerData.money))
+            validatedQuantity, itemConfig.name, sellPrice, playerData.money), Constants.LOG_LEVELS.INFO)
     
     return true, string.format("Successfully sold %dx %s for $%d", 
         validatedQuantity, itemConfig.name, sellPrice), transactionResult
@@ -376,7 +424,7 @@ function SecureTransactions.AddMoney(playerId, amount, reason)
     
     LogTransaction(playerId, "add_money", 
         string.format("Added $%d (reason: %s, balance: $%d)", 
-            validatedAmount, reason, playerData.money))
+            validatedAmount, reason, playerData.money), Constants.LOG_LEVELS.INFO)
     
     return true, string.format("Added $%d to account", validatedAmount)
 end
@@ -422,7 +470,7 @@ function SecureTransactions.RemoveMoney(playerId, amount, reason)
     
     LogTransaction(playerId, "remove_money", 
         string.format("Removed $%d (reason: %s, balance: $%d)", 
-            validatedAmount, reason, playerData.money))
+            validatedAmount, reason, playerData.money), Constants.LOG_LEVELS.INFO)
     
     return true, string.format("Removed $%d from account", validatedAmount)
 end
@@ -512,7 +560,7 @@ function SecureTransactions.CleanupPlayer(playerId)
         end
     end
     
-    LogTransaction(playerId, "cleanup", "Player transactions cleaned up")
+    LogTransaction(playerId, "cleanup", "Player transactions cleaned up", Constants.LOG_LEVELS.INFO)
 end
 
 -- Initialize when loaded
