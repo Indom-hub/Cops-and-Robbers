@@ -15,8 +15,13 @@ shared_scripts {
 -- Define server-side scripts in dependency order.
 server_scripts {
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
     -- Core utilities and constants (loaded first)
     'safe_utils.lua',    -- Safe utility functions.
+=======
+    -- Core server logic with consolidated systems
+    'server.lua',       -- Core server logic with validation, data management, transactions, player management, performance optimization, and integration management
+>>>>>>> Stashed changes
 =======
     -- Core server logic with consolidated systems
     'server.lua',       -- Core server logic with validation, data management, transactions, player management, performance optimization, and integration management
